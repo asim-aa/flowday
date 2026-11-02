@@ -11,7 +11,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from flowday.dataset import DataConfig, Dataset, build_dataset
+from flowday.dataset import DataConfig
 from flowday.models import (
     GBMEstimator,
     GlobalMultiplier,
@@ -160,49 +160,25 @@ def test_baselines_by_hand():
     assert t.predict(q).tolist() == pytest.approx([25, 10, 15])
 
 
-@pytest.fixture(scope="module")
-def small() -> Dataset:
-    return build_dataset(DataConfig(n_users=100, n_days=60, eval_days=20, seed=1))
-
-
-@pytest.fixture(scope="module")
-def parts(small: Dataset) -> dict[str, pd.DataFrame]:
-    split = split_users(list(small.users), 1)
-    return {k: small.frame[small.frame["user_id"].isin(v)].reset_index(drop=True) for k, v in split.items()}
-
-
-@pytest.fixture(scope="module")
-def fitted(parts):
-    train = parts["train"]
-    return {
-        "trust": TrustEstimate().fit(train),
-        "global": GlobalMultiplier().fit(train),
-        "type": TypeMedianRatio().fit(train),
-        "gbm": GBMEstimator(None, 1).fit(train),
-        "q50": GBMEstimator(0.5, 1).fit(train),
-        "q80": GBMEstimator(0.8, 1).fit(train),
-    }
-
-
 def test_models_beat_baselines_on_unseen_users(parts, fitted):
     test = parts["test"]
     y = test["actual"].to_numpy(dtype=float)
     err = {k: mae(y, m.predict(test)) for k, m in fitted.items()}
-    assert err["trust"] > err["global"] > err["type"] > err["gbm"]
-    assert err["q50"] < err["type"]
+    assert err["trust"] > err["global_multiplier"] > err["type_median"] > err["gbm"]
+    assert err["gbm_q50"] < err["type_median"]
 
 
 def test_quantile_models_are_roughly_calibrated_on_unseen_users(parts, fitted):
     test = parts["test"]
     y = test["actual"].to_numpy(dtype=float)
-    assert abs(coverage(y, fitted["q50"].predict(test)) - 0.5) < 0.06
-    assert abs(coverage(y, fitted["q80"].predict(test)) - 0.8) < 0.06
-    assert np.mean(fitted["q80"].predict(test) >= fitted["q50"].predict(test)) > 0.95
+    assert abs(coverage(y, fitted["gbm_q50"].predict(test)) - 0.5) < 0.06
+    assert abs(coverage(y, fitted["gbm_q80"].predict(test)) - 0.8) < 0.06
+    assert np.mean(fitted["gbm_q80"].predict(test) >= fitted["gbm_q50"].predict(test)) > 0.95
 
 
 def test_gbm_handles_unseen_types_and_users_without_history(fitted):
     q = pd.DataFrame({"task_type": ["never_seen", "coding"], "estimate": [30, 30], "hour": [10.0, 15.0]})
-    for name in ("gbm", "q50", "q80"):
+    for name in ("gbm", "gbm_q50", "gbm_q80"):
         p = fitted[name].predict(q)  # no history columns at all (brand-new user)
         assert np.isfinite(p).all() and (p > 0).all()
 
@@ -210,9 +186,11 @@ def test_gbm_handles_unseen_types_and_users_without_history(fitted):
 def test_gbm_is_deterministic_and_survives_serialisation(parts, fitted, tmp_path: Path):
     test = parts["test"].head(200)
     again = GBMEstimator(0.8, 1).fit(parts["train"])
-    np.testing.assert_allclose(again.predict(test), fitted["q80"].predict(test))
-    joblib.dump(fitted["q80"], tmp_path / "m.joblib")
-    np.testing.assert_allclose(joblib.load(tmp_path / "m.joblib").predict(test), fitted["q80"].predict(test))
+    np.testing.assert_allclose(again.predict(test), fitted["gbm_q80"].predict(test))
+    joblib.dump(fitted["gbm_q80"], tmp_path / "m.joblib")
+    np.testing.assert_allclose(
+        joblib.load(tmp_path / "m.joblib").predict(test), fitted["gbm_q80"].predict(test)
+    )
 
 
 # --- the training entry point ----------------------------------------------------------------------

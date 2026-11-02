@@ -499,6 +499,7 @@ dependencies = [
     { name = "pandas" },
     { name = "scikit-learn" },
     { name = "streamlit" },
+    { name = "threadpoolctl" },
 ]
 
 [package.dev-dependencies]
@@ -517,6 +518,7 @@ requires-dist = [
     { name = "pandas", specifier = ">=2.2" },
     { name = "scikit-learn", specifier = ">=1.5" },
     { name = "streamlit", specifier = ">=1.40" },
+    { name = "threadpoolctl", specifier = ">=3.5" },
 ]
 
 [package.metadata.requires-dev]

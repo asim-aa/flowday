@@ -8,6 +8,7 @@ dependencies = [
     "numpy>=1.26",
     "pandas>=2.2",
     "scikit-learn>=1.5",
+    "threadpoolctl>=3.5",
     "matplotlib>=3.8",
     "streamlit>=1.40",
 ]
@@ -40,6 +41,9 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
 
+[tool.ruff.lint.per-file-ignores]
+"flowday/evaluation/plots.py" = ["E501"]  # figure captions
+
 [tool.mypy]
 python_version = "3.11"
 strict = true
@@ -47,5 +51,5 @@ warn_unused_ignores = true
 plugins = []
 
 [[tool.mypy.overrides]]
-module = ["sklearn.*", "matplotlib.*", "joblib.*", "streamlit.*"]
+module = ["sklearn.*", "matplotlib.*", "joblib.*", "streamlit.*", "threadpoolctl.*"]
 ignore_missing_imports = true
