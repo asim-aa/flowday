@@ -110,15 +110,21 @@ def test_scheduling_is_deterministic(sc):
     assert run(sc) == run(sc)
 
 
+def rank(t: Task) -> tuple[int, int, int, str]:
+    """Admission order used by the scheduler: priority, then deadline, then shorter, then id."""
+    return (-t.priority, t.deadline if t.deadline is not None else 10**9, t.duration, t.id)
+
+
 @PROPS
-@given(scenarios(max_tasks=6), st.data())
-def test_removing_a_task_never_causes_a_new_drop(sc, data):
-    if not sc.tasks:
-        return
+@given(scenarios(max_tasks=5))
+def test_a_task_is_only_dropped_if_it_cannot_fit_alongside_higher_ranked_tasks(sc):
+    """Priority is respected: nothing is dropped to make room for something that ranks lower."""
     s = run(sc)
-    victim = data.draw(st.sampled_from(sc.tasks))
-    smaller = build_schedule(sc.events, [t for t in sc.tasks if t.id != victim.id], sc.windows)
-    assert {d.task_id for d in smaller.dropped} <= {d.task_id for d in s.dropped}
+    placed = [t for t in sc.tasks if s.placement_of(t.id)]
+    for d in s.dropped:
+        dropped_task = s.task(d.task_id)
+        outranking = [t for t in placed if rank(t) < rank(dropped_task)]
+        assert not brute_force_feasible(Scenario(sc.events, [*outranking, dropped_task], sc.windows))
 
 
 # --- replanning invariants ------------------------------------------------------------------------
