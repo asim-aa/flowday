@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.DS_Store
+# generated, reproducible with `make data` / `make train`
+data/
+artifacts/
+*.db
