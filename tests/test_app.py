@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import math
 import sqlite3
+from datetime import date
 from pathlib import Path
 
 import joblib
@@ -11,9 +13,17 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st_h
 from streamlit.testing.v1 import AppTest
 
-from flowday.app.inputs import parse_events, parse_tasks
-from flowday.app.session import PlanningSession, compare_estimators, diff_schedules, persona_history
-from flowday.eventlog import EventLog
+from flowday.app.inputs import parse_events, parse_routines, parse_tasks, parse_weekdays
+from flowday.app.session import (
+    APP_USER,
+    ESTIMATOR_LABELS,
+    PlanningSession,
+    compare_estimators,
+    diff_schedules,
+    log_history,
+    persona_history,
+)
+from flowday.eventlog import EventLog, EventLogObserver
 from flowday.scheduler import Event, Task, build_schedule, hhmm, validate_schedule
 from tests.conftest import SMALL
 
@@ -180,7 +190,13 @@ def test_session_writes_plans_and_completions_to_the_log(fitted):
         "SELECT actual_minutes, planned_minutes FROM completions ORDER BY completion_id"
     ).fetchone()
     assert actual[0] == actual[1] + 25  # the logged actual includes the overrun
-    assert log.history_frame(source="demo").shape[0] == 2
+    # "done as planned" is only assumed, so just the overrun is usable training data
+    assert log.history_frame(source="demo").shape[0] == 1
+    assert log.history_frame(source="demo", measured_only=False).shape[0] == 2
+    assert log.db.execute("SELECT measurement FROM completions ORDER BY completion_id").fetchall() == [
+        ("measured",),
+        ("assumed",),
+    ]
 
 
 def test_ml_reserves_more_time_than_trusting_the_user_for_underestimated_types(fitted):
@@ -274,3 +290,205 @@ def test_app_compare_tab_shows_every_estimator(app: AppTest):
     assert not at.exception
     assert len(at.selectbox(key="cmp_left").options) == 5
     assert at.selectbox(key="cmp_left").value == "trust" and at.selectbox(key="cmp_right").value == "gbm"
+
+
+# --- routines -----------------------------------------------------------------------------------------
+
+
+def test_parse_weekdays():
+    assert parse_weekdays("daily") == frozenset(range(7)) and parse_weekdays("") == frozenset(range(7))
+    assert parse_weekdays("weekdays") == frozenset(range(5)) and parse_weekdays("weekends") == frozenset(
+        {5, 6}
+    )
+    assert parse_weekdays("Mon, Wed Fri") == frozenset({0, 2, 4})
+    assert parse_weekdays("Tuesday,thu") == frozenset({1, 3})
+    with pytest.raises(ValueError, match="unknown day"):
+        parse_weekdays("Mon, Funday")
+
+
+def test_parse_routines_fixed_and_flexible():
+    df = pd.DataFrame(
+        {
+            "title": ["Gym", "Study", None],
+            "kind": ["fixed", "flexible", None],
+            "time": ["17:15", "", None],
+            "minutes": [30, 60, None],
+            "type": ["exercise", "study", None],
+            "priority": [3, None, None],
+            "days": ["Mon, Wed", "daily", None],
+        }
+    )
+    routines, errors = parse_routines(df)
+    assert errors == []
+    gym, study = routines
+    assert (gym.kind, gym.start_minute, gym.duration, gym.weekdays) == (
+        "fixed",
+        hhmm("17:15"),
+        30,
+        frozenset({0, 2}),
+    )
+    assert (study.kind, study.start_minute, study.deadline_minute, study.priority) == (
+        "flexible",
+        None,
+        None,
+        3,
+    )
+    assert len({r.id for r in routines}) == 2
+
+
+@pytest.mark.parametrize(
+    "row, fragment",
+    [
+        ({"kind": "fixed", "time": ""}, "needs a start time"),
+        ({"kind": "sometimes"}, "kind must be"),
+        ({"minutes": 0}, "duration must be positive"),
+        ({"days": "Someday"}, "unknown day"),
+        ({"time": "9am"}, "not a time"),
+    ],
+)
+def test_parse_routines_reports_readable_errors(row, fragment):
+    base = {
+        "title": "x",
+        "kind": "fixed",
+        "time": "09:00",
+        "minutes": 30,
+        "type": "admin",
+        "priority": 3,
+        "days": "daily",
+    }
+    _, errors = parse_routines(pd.DataFrame([{**base, **row}]))
+    assert len(errors) == 1 and fragment in errors[0] and "Routine row 1" in errors[0]
+
+
+# --- real durations: measured, early, assumed -----------------------------------------------------------
+
+
+def test_finishing_early_records_a_measured_duration_and_pulls_the_day_forward(fitted):
+    log = EventLog()
+    s = start(fitted, "trust", log)
+    first, second = sorted(s.schedule.placements, key=lambda p: p.start)[:2]
+    s.finish_early(10)
+    done = s.schedule.completed[0]
+    assert (done.task_id, done.end) == (first.task_id, first.end - 10) and s.now == first.end - 10
+    assert min(p.start for p in s.schedule.placements) >= s.now
+    new_second = s.schedule.placement_of(second.task_id)
+    assert new_second is not None and new_second.start <= second.start  # nothing was pushed later
+    assert any("moved" in c for c in s.changes) or s.changes == ["Nothing else needed to move."]
+    assert validate_schedule(s.schedule) == []
+    assert log.db.execute("SELECT trigger FROM plans ORDER BY plan_id").fetchall() == [
+        ("initial",),
+        ("early",),
+    ]
+    assert log.db.execute("SELECT measurement FROM completions").fetchall() == [("measured",)]
+
+
+def test_done_as_planned_is_assumed_but_overrun_and_early_are_measured(fitted):
+    log = EventLog()
+    s = start(fitted, "trust", log)
+    s.mark_done()
+    s.overrun(5)
+    s.finish_early(5)
+    rows = log.db.execute("SELECT measurement FROM completions ORDER BY completion_id").fetchall()
+    assert rows == [("assumed",), ("measured",), ("measured",)]
+    assert len(log.history_frame(source="demo")) == 2
+
+
+def test_finishing_early_never_leaves_a_zero_length_task(fitted):
+    s = start(fitted, "trust")
+    first = s.next_task()
+    assert first is not None
+    s.finish_early(10_000)
+    assert (
+        s.schedule.completed[0].end - s.schedule.completed[0].start == 1
+        and first.task_id == s.schedule.completed[0].task_id
+    )
+
+
+# --- history from the user's own log ---------------------------------------------------------------------
+
+
+def test_log_history_uses_only_the_app_users_earlier_days():
+    rows = pd.DataFrame(
+        {
+            "source": "demo",
+            "user_id": [APP_USER, APP_USER, "someone-else"],
+            "day": [date(2026, 1, 5).toordinal(), date(2026, 1, 6).toordinal(), date(2026, 1, 5).toordinal()],
+            "task_id": ["a", "b", "c"],
+            "task_type": ["coding", "coding", "coding"],
+            "estimate": [30, 30, 30],
+            "hour": 10.0,
+            "actual": [60, 45, 600],
+        }
+    )
+    feats, (ratio, n) = log_history(rows, [Task("t1", "coding", 30)], today=date(2026, 1, 7))
+    assert n == 2 and ratio == pytest.approx(
+        math.sqrt(2.0 * 1.5)
+    )  # geometric mean of 2.0 and 1.5; "someone-else" ignored
+    assert feats["t1"]["user_type_n"] == 2
+    none_yet, (r0, n0) = log_history(rows, [Task("t1", "coding", 30)], today=date(2026, 1, 5))
+    assert n0 == 0 and r0 == 1.0 and none_yet["t1"]["user_n"] == 0
+
+
+# --- the app with routines, early finishes and a retrained model ---------------------------------------
+
+
+def test_routines_apply_only_on_their_weekdays(app: AppTest):
+    at = app.run()
+    at.sidebar.selectbox(key="weekday").set_value(0)  # Monday: the gym routine applies
+    at.button(key="plan").click().run()
+    assert not at.exception
+    monday = at.session_state["session"].schedule
+    assert "Gym" in [e.title for e in monday.events]
+    assert "Deep-work study block" in [t.title for t in monday.tasks]
+
+    at.sidebar.selectbox(key="weekday").set_value(1)  # Tuesday: study block (daily) yes, gym no
+    at.button(key="plan").click().run()
+    tuesday = at.session_state["session"].schedule
+    assert "Gym" not in [e.title for e in tuesday.events]
+    assert "Deep-work study block" in [t.title for t in tuesday.tasks]
+
+
+def test_app_finished_early_button_logs_a_measured_duration(app: AppTest, tmp_path: Path):
+    at = app.run()
+    at.button(key="plan").click().run()
+    at.number_input(key="saved").set_value(10)
+    at.button(key="early").click().run()
+    assert not at.exception
+    assert len(at.session_state["session"].schedule.completed) == 1
+    with EventLog(tmp_path / "flowday.db") as log:
+        assert log.db.execute("SELECT measurement FROM completions").fetchall() == [("measured",)]
+        assert log.db.execute("SELECT trigger FROM plans ORDER BY plan_id").fetchall()[-1] in {
+            ("early",),
+            ("initial",),
+        }
+
+
+def test_app_can_retrain_on_the_users_own_log(app: AppTest, tmp_path: Path):
+    from datetime import timedelta
+
+    from flowday.simulator import TrustPlanner, generate_timeline, sample_users, simulate_day
+
+    with EventLog(tmp_path / "flowday.db") as log:  # a pre-existing log with enough measured history
+        for day in generate_timeline(sample_users(1, 9)[0], 25, 9):
+            iso = (date.today() - timedelta(days=30 - day.index)).isoformat()
+            simulate_day(day, TrustPlanner(), EventLogObserver(log, APP_USER, iso, "trust", source="demo"))
+    at = app.run()
+    assert not at.exception
+    assert at.sidebar.button(key="retrain").disabled is False
+    mine = {ESTIMATOR_LABELS["mine_gbm"], ESTIMATOR_LABELS["mine_gbm_q80"]}
+    assert not mine & set(at.sidebar.radio(key="estimator").options)  # only offered after retraining
+    at.sidebar.button(key="retrain").click().run()
+    assert not at.exception
+    assert mine <= set(at.sidebar.radio(key="estimator").options)
+    at.sidebar.selectbox(key="persona").set_value(-1)  # plan for "me", using my own history
+    at.sidebar.radio(key="estimator").set_value("mine_gbm")
+    at.button(key="plan").click().run()
+    assert not at.exception
+    session = at.session_state["session"]
+    assert session.estimator_name == "mine_gbm" and session.schedule.placements
+    assert any("typically take" in c.value for c in at.caption)
+
+
+def test_retrain_button_is_disabled_without_enough_measured_history(app: AppTest):
+    at = app.run()
+    assert at.sidebar.button(key="retrain").disabled is True

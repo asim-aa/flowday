@@ -21,7 +21,7 @@ import numpy as np
 import pandas as pd
 from threadpoolctl import threadpool_limits
 
-from flowday.dataset import DataConfig
+from flowday.dataset import DataConfig, make_users
 from flowday.models import Estimator, add_history_features, cluster_bootstrap_ci
 from flowday.planning import FEATURE_COLUMNS, EstimatorPlanner
 from flowday.simulator import (
@@ -29,7 +29,6 @@ from flowday.simulator import (
     UserProfile,
     generate_timeline,
     history_frame,
-    sample_users,
     simulate_day,
 )
 
@@ -55,6 +54,8 @@ METRICS = {
     "event_overlap_minutes": "Minutes spilling into fixed events / day",
     "overtime_minutes": "Overtime minutes / day",
     "tasks_completed": "Tasks completed / day",
+    "replan_churn": "Tasks moved by replans / day",
+    "pull_forwards": "Early-finish pull-forwards / day",
 }
 
 
@@ -75,7 +76,11 @@ class OracleEstimator:
 
 
 def evaluate_user(
-    user: UserProfile, cfg: DataConfig, models: dict[str, Estimator], estimators: list[str] = ESTIMATORS
+    user: UserProfile,
+    cfg: DataConfig,
+    models: dict[str, Estimator],
+    estimators: list[str] = ESTIMATORS,
+    reclaim_early: bool = False,
 ) -> list[dict[str, Any]]:
     """Run every estimator over one user's evaluation-period days. Returns one row per (day, estimator)."""
     days = generate_timeline(user, cfg.n_days, cfg.seed)
@@ -90,7 +95,7 @@ def evaluate_user(
                 planner = EstimatorPlanner(OracleEstimator(day), day_features, refine_iters=4)
             else:
                 planner = EstimatorPlanner(models[name], day_features)
-            outcome = simulate_day(day, planner)
+            outcome = simulate_day(day, planner, reclaim_early=reclaim_early)
             rows.append({"user_id": user.user_id, "day": day.index, "estimator": name, **outcome.as_row()})
     return rows
 
@@ -98,24 +103,34 @@ def evaluate_user(
 _STATE: dict[str, Any] = {}
 
 
-def _init_worker(models: dict[str, Estimator], cfg: DataConfig, users: dict[int, UserProfile]) -> None:
+def _init_worker(
+    models: dict[str, Estimator], cfg: DataConfig, users: dict[int, UserProfile], reclaim_early: bool
+) -> None:
     threadpool_limits(1)  # tiny predict() calls: OpenMP threading only adds overhead
-    _STATE.update(models=models, cfg=cfg, users=users)
+    _STATE.update(models=models, cfg=cfg, users=users, reclaim_early=reclaim_early)
 
 
 def _job(user_id: int) -> list[dict[str, Any]]:
-    return evaluate_user(_STATE["users"][user_id], _STATE["cfg"], _STATE["models"])
+    return evaluate_user(
+        _STATE["users"][user_id], _STATE["cfg"], _STATE["models"], reclaim_early=_STATE["reclaim_early"]
+    )
 
 
 def run_simulations(
-    models: dict[str, Estimator], cfg: DataConfig, user_ids: list[int], workers: int
+    models: dict[str, Estimator],
+    cfg: DataConfig,
+    user_ids: list[int],
+    workers: int,
+    reclaim_early: bool = False,
 ) -> pd.DataFrame:
-    users = {u.user_id: u for u in sample_users(cfg.n_users, cfg.seed)}
+    users = {u.user_id: u for u in make_users(cfg)}
     if workers <= 1:
-        _init_worker(models, cfg, users)
+        _init_worker(models, cfg, users, reclaim_early)
         results = [_job(u) for u in user_ids]
     else:
-        with ProcessPoolExecutor(workers, initializer=_init_worker, initargs=(models, cfg, users)) as pool:
+        with ProcessPoolExecutor(
+            workers, initializer=_init_worker, initargs=(models, cfg, users, reclaim_early)
+        ) as pool:
             results = list(pool.map(_job, user_ids, chunksize=2))
     return pd.DataFrame([row for rows in results for row in rows])
 
@@ -156,18 +171,22 @@ def markdown_table(summary: dict[str, Any], metrics: list[str] | None = None) ->
     return "\n".join(lines)
 
 
-def run(workers: int, max_users: int | None = None) -> dict[str, Any]:
+def run(workers: int, max_users: int | None = None, reclaim: bool = False) -> dict[str, Any]:
+    """Evaluate every estimator on the test users. With `reclaim`, early finishes also trigger a
+    replan (pull the rest of the day forward); results then go to `*_reclaim` files."""
     bundle = joblib.load(ARTIFACT)
     cfg: DataConfig = bundle["config"]
     test_users: list[int] = bundle["split"]["test"][:max_users]
-    rows = run_simulations(bundle["estimators"], cfg, test_users, workers)
+    rows = run_simulations(bundle["estimators"], cfg, test_users, workers, reclaim_early=reclaim)
     summary = summarize(rows)
     summary["synthetic"] = True
+    summary["reclaim_early"] = reclaim
+    suffix = "_reclaim" if reclaim else ""
     REPORT_DIR.mkdir(exist_ok=True)
     DATA_DIR.mkdir(exist_ok=True)
-    rows.to_csv(DATA_DIR / "schedule_eval_rows.csv", index=False)
-    (REPORT_DIR / "schedule_results.json").write_text(json.dumps(summary, indent=2))
-    (REPORT_DIR / "schedule_results.md").write_text(markdown_table(summary) + "\n")
+    rows.to_csv(DATA_DIR / f"schedule_eval_rows{suffix}.csv", index=False)
+    (REPORT_DIR / f"schedule_results{suffix}.json").write_text(json.dumps(summary, indent=2))
+    (REPORT_DIR / f"schedule_results{suffix}.md").write_text(markdown_table(summary) + "\n")
     return summary
 
 
@@ -175,9 +194,16 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     ap.add_argument("--max-users", type=int, default=None, help="evaluate only the first K test users")
+    ap.add_argument(
+        "--mode",
+        choices=["both", "no-reclaim", "reclaim"],
+        default="both",
+        help="no-reclaim: early finishes are not reclaimed (the headline setting); reclaim: they are",
+    )
     args = ap.parse_args()
-    summary = run(args.workers, args.max_users)
-    print(markdown_table(summary))
+    for reclaim in {"both": (False, True), "no-reclaim": (False,), "reclaim": (True,)}[args.mode]:
+        print(f"\n== early finishes {'reclaimed' if reclaim else 'not reclaimed'} ==")
+        print(markdown_table(run(args.workers, args.max_users, reclaim)))
     from flowday.evaluation.plots import make_figures
 
     make_figures()

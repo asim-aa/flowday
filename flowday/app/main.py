@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import date, datetime, time
 from pathlib import Path
 
 import altair as alt
@@ -17,19 +17,22 @@ import joblib
 import pandas as pd
 import streamlit as st
 
-from flowday.app.inputs import parse_events, parse_tasks
+from flowday.app.inputs import DAY_NAMES, parse_events, parse_routines, parse_tasks
 from flowday.app.session import (
+    APP_USER,
     ESTIMATOR_LABELS,
     PlanningSession,
     compare_estimators,
+    log_history,
     persona_history,
     title_of,
 )
 from flowday.dataset import DataConfig
 from flowday.eventlog import EventLog
 from flowday.models import Estimator, TrustEstimate
+from flowday.models.retrain import MIN_ROWS, fit_from_log
 from flowday.models.train import quick_fit
-from flowday.scheduler import Schedule, fmt_time
+from flowday.scheduler import Schedule, expand_routines, fmt_time
 from flowday.simulator import TASK_TYPES
 
 ARTIFACT = Path(os.environ.get("FLOWDAY_ARTIFACT", "artifacts/models.joblib"))
@@ -65,6 +68,18 @@ DEFAULT_TASKS = pd.DataFrame(
         "priority": [5, 3, 4, 4, 2, 3],
     }
 )
+DEFAULT_ROUTINES = pd.DataFrame(
+    {
+        "title": ["Deep-work study block", "Gym"],
+        "kind": ["flexible", "fixed"],
+        "time": ["17:00", "17:15"],  # flexible: deadline; fixed: start
+        "minutes": [60, 30],
+        "type": ["study", "exercise"],
+        "priority": [3, 3],
+        "days": ["daily", "Mon, Wed, Fri"],
+    }
+)
+MY_LOG = -1  # persona option meaning "use my own logged history"
 
 
 def _minutes(t: time) -> int:
@@ -148,8 +163,19 @@ class Settings:
     name: str
     start: int
     end: int
+    weekday: int
     persona: int | None
     log_on: bool
+    log_frame: pd.DataFrame
+
+
+def _read_log_frame() -> pd.DataFrame:
+    """The app user's measured completions from the local event log (empty if there is none yet)."""
+    if not DB_PATH.exists():
+        return pd.DataFrame()
+    with EventLog(DB_PATH) as log:
+        frame = log.history_frame(source="demo")
+    return frame[frame["user_id"] == APP_USER]
 
 
 def sidebar() -> Settings:
@@ -166,9 +192,32 @@ def sidebar() -> Settings:
     assert cfg is not None
     start = _minutes(st.sidebar.time_input("Work day starts", time(9, 0), key="work_start"))
     end = _minutes(st.sidebar.time_input("Work day ends", time(18, 0), key="work_end"))
+    weekday = st.sidebar.selectbox(
+        "Plan for",
+        range(7),
+        index=date.today().weekday(),
+        format_func=lambda d: DAY_NAMES[d].capitalize(),
+        key="weekday",
+        help="Decides which recurring routines apply to the day.",
+    )
 
-    if estimators is None:  # no model yet: only the user's own estimates are available
-        estimators = {"trust": TrustEstimate()}
+    log_frame = _read_log_frame()
+    estimators = (
+        dict(estimators) if estimators else {"trust": TrustEstimate()}
+    )  # no model yet: own estimates only
+    st.sidebar.subheader("Learn from my own log")
+    n_logged = len(log_frame)
+    st.sidebar.caption(
+        f"{n_logged} measured completion(s) logged. 'Done as planned' is only assumed, so it does not count; "
+        "use 'ran over' / 'finished early' to record real durations."
+    )
+    if st.sidebar.button(
+        f"Retrain on my log (needs {MIN_ROWS})", key="retrain", disabled=n_logged < MIN_ROWS
+    ):
+        st.session_state["log_models"] = fit_from_log(log_frame)
+    for key, model in (st.session_state.get("log_models") or {}).items():
+        if key in ("gbm", "gbm_q80"):
+            estimators[f"mine_{key}"] = model
     name = st.sidebar.radio(
         "Duration estimates",
         list(estimators),
@@ -177,18 +226,22 @@ def sidebar() -> Settings:
         help="How long the scheduler reserves for each task. Baselines use only your estimate; "
         "ML also uses task type, time of day and, for a persona, their history.",
     )
-    persona_options: list[int | None] = [None, *demo_users]
+    persona_options: list[int | None] = [None, *demo_users, *([MY_LOG] if n_logged else [])]
     persona = st.sidebar.selectbox(
         "Who is the ML model planning for?",
         persona_options,
         format_func=lambda u: (
-            "A new user (no history)" if u is None else f"Synthetic user #{u} (history on file)"
+            "A new user (no history)"
+            if u is None
+            else f"Me, from my own log ({n_logged} tasks)"
+            if u == MY_LOG
+            else f"Synthetic user #{u} (history on file)"
         ),
         key="persona",
     )
     log_on = st.sidebar.checkbox(f"Log plans and completions to {DB_PATH}", value=True, key="log_on")
     st.sidebar.caption("All demo data and the ML model are synthetic. Not evidence of real-world benefit.")
-    return Settings(estimators, cfg, name, start, end, persona, log_on)
+    return Settings(estimators, cfg, name, start, end, weekday, persona, log_on, log_frame)
 
 
 def main() -> None:
@@ -232,20 +285,53 @@ def main() -> None:
                     ),
                 },
             )
+        with st.expander("Recurring routines (added to the day when they apply)"):
+            routines_df = st.data_editor(
+                DEFAULT_ROUTINES,
+                num_rows="dynamic",
+                key="routines",
+                column_config={
+                    "kind": st.column_config.SelectboxColumn(
+                        "kind", options=["fixed", "flexible"], required=True
+                    ),
+                    "time": st.column_config.TextColumn("time (fixed: start; flexible: deadline)"),
+                    "type": st.column_config.SelectboxColumn("type", options=list(TASK_TYPES)),
+                    "days": st.column_config.TextColumn("days (daily, weekdays, or Mon, Wed...)"),
+                },
+            )
         events, event_errors = parse_events(events_df)
         tasks, task_errors = parse_tasks(tasks_df)
-        for message in [*event_errors, *task_errors]:
+        routines, routine_errors = parse_routines(routines_df)
+        routine_events, routine_tasks = expand_routines(routines, 1, first_weekday=cfg.weekday)
+        events, tasks = events + routine_events, tasks + routine_tasks
+        if routine_events or routine_tasks:
+            st.caption(
+                f"{len(routine_events)} routine event(s) and {len(routine_tasks)} routine task(s) "
+                f"apply on {DAY_NAMES[cfg.weekday].capitalize()}."
+            )
+        for message in [*event_errors, *task_errors, *routine_errors]:
             st.error(message)
+        starts = sorted(events, key=lambda e: e.start)
+        for a, b in zip(starts, starts[1:], strict=False):
+            if b.start < a.end:
+                st.warning(f"Fixed events overlap: {a.title or a.id} and {b.title or b.id}. Neither moves.")
         if cfg.start >= cfg.end:
             st.error("The work day must end after it starts.")
-        inputs_ok = not (event_errors or task_errors) and bool(tasks) and cfg.start < cfg.end
+        inputs_ok = (
+            not (event_errors or task_errors or routine_errors) and bool(tasks) and cfg.start < cfg.end
+        )
 
         history = None
         if cfg.persona is not None and tasks:
-            history, (ratio, n) = persona_history(cfg.cfg, cfg.persona, tasks)
-            if name in ("gbm", "gbm_q80"):
+            if cfg.persona == MY_LOG:
+                history, (ratio, n) = log_history(cfg.log_frame, tasks)
+                who = "From your log you"
+            else:
+                history, (ratio, n) = persona_history(cfg.cfg, cfg.persona, tasks)
+                who = "From their history this user"
+            if name.endswith(("gbm", "gbm_q80")):
                 st.caption(
-                    f"From their history this user typically takes **x{ratio:.2f}** their estimate (based on {n} logged tasks)."
+                    f"{who} typically take(s) **x{ratio:.2f}** their estimate (based on {n} logged tasks)."
                 )
 
         if st.button("Plan my day", type="primary", key="plan", disabled=not inputs_ok):
@@ -308,16 +394,31 @@ def show_session(session: PlanningSession) -> None:
         st.markdown(
             f"**Next up: {title_of(s, nxt.task_id)}**, planned {fmt_time(nxt.start)}-{fmt_time(nxt.end)}"
         )
-        c1, c2, c3 = st.columns([1, 1, 1])
-        c1.button("Done as planned", key="done", on_click=session.mark_done)
+        c1, c2, c3 = st.columns(3)
+        c1.button(
+            "Done as planned",
+            key="done",
+            on_click=session.mark_done,
+            help="Counts as 'about as planned'. The duration is assumed, so it is not used to train models.",
+        )
+        # numbers are read at click time: `args=` would capture whatever they were when the page rendered
         c2.number_input("Ran over by (minutes)", min_value=1, max_value=480, value=15, step=5, key="extra")
-        c3.write("")
-        # read the number at click time: `args=` would capture whatever it was when the page rendered
-        c3.button(
+        c2.button(
             "Task ran over",
             key="overrun",
             type="primary",
             on_click=lambda: session.overrun(int(st.session_state["extra"])),
+        )
+        c3.number_input(
+            "Finished early by (minutes)", min_value=1, max_value=480, value=10, step=5, key="saved"
+        )
+        c3.button(
+            "Finished early",
+            key="early",
+            on_click=lambda: session.finish_early(int(st.session_state["saved"])),
+        )
+        st.caption(
+            "Ran over / finished early record the real duration and are used to learn. Early finishes pull the rest of the day forward."
         )
     if session.changes:
         st.info("Replanned. " + "  \n".join(session.changes))

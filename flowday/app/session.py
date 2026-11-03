@@ -9,7 +9,7 @@ from datetime import date
 
 import pandas as pd
 
-from flowday.dataset import DataConfig
+from flowday.dataset import DataConfig, make_users
 from flowday.eventlog import EventLog, EventLogObserver
 from flowday.models import Estimator, history_features
 from flowday.planning import EstimatorPlanner, task_features
@@ -24,7 +24,7 @@ from flowday.scheduler import (
     complete,
     fmt_time,
 )
-from flowday.simulator import generate_timeline, history_frame, sample_users
+from flowday.simulator import generate_timeline, history_frame
 
 APP_USER = "app-demo"
 
@@ -34,6 +34,8 @@ ESTIMATOR_LABELS = {
     "type_median": "Per-type median ratio (baseline)",
     "gbm": "ML: gradient boosting (median)",
     "gbm_q80": "ML: gradient boosting, cautious (80th percentile)",
+    "mine_gbm": "ML trained on my own log (median)",
+    "mine_gbm_q80": "ML trained on my own log, cautious (80th percentile)",
 }
 
 
@@ -101,22 +103,53 @@ class PlanningSession:
         return min(self.schedule.placements, key=lambda p: p.start, default=None)
 
     def mark_done(self) -> None:
-        """The next task finished exactly as planned."""
+        """The next task finished about as planned. The duration is *assumed*, not measured, so it is
+        logged as such and never used to train a model."""
         p = self._require_next()
-        self.schedule = complete(self.schedule, p.task_id, p.start, p.end)
-        self.now = p.end
-        self.changes = []
-        if self.observer:
-            self.observer.on_completion(p.task_id, p.start, p.end, p.end - p.start)
+        self._finish(p.end - p.start, measured=False)
 
     def overrun(self, extra_minutes: int) -> None:
-        """The next task took `extra_minutes` longer than planned: log it and replan the rest."""
+        """The next task took `extra_minutes` longer than planned: record it and replan the rest."""
         p = self._require_next()
-        end = p.end + extra_minutes
+        self._finish(p.end - p.start + extra_minutes, measured=True)
+
+    def finish_early(self, saved_minutes: int) -> None:
+        """The next task took `saved_minutes` less than planned: record it and pull the rest forward."""
+        p = self._require_next()
+        self._finish(max(1, p.end - p.start - saved_minutes), measured=True)
+
+    def _finish(self, actual_minutes: int, measured: bool) -> None:
+        p = self._require_next()
+        end = p.start + actual_minutes
         before = self.schedule
-        self.schedule = self.planner.replan(before, end, Overrun(p.task_id, extra_minutes))
+        trigger = None
+        if end > p.end:
+            self.schedule = self.planner.replan(before, end, Overrun(p.task_id, end - p.end))
+            trigger = "overrun"
+        else:
+            self.schedule = complete(before, p.task_id, p.start, end)
+            if end < p.end and self.schedule.placements:  # reclaim the time that was freed
+                self.schedule = self.planner.replan(self.schedule, end, None)
+                trigger = "early"
         self.now = end
-        self.changes = diff_schedules(before, self.schedule)
+        self.changes = self._explain(before, p, trigger)
+        if self.observer:
+            self.observer.on_completion(p.task_id, p.start, end, p.end - p.start, measured)
+            if trigger:
+                self.observer.on_plan(trigger, self.schedule)
+
+    def _explain(self, before: Schedule, p: Placement, trigger: str | None) -> list[str]:
+        if trigger is None:
+            return []
+        completed = {c.task_id for c in self.schedule.completed}
+        old = Schedule(
+            events=before.events,
+            tasks=before.tasks,
+            windows=before.windows,
+            placements=tuple(q for q in before.placements if q.task_id not in completed),
+            dropped=before.dropped,
+        )
+        notes = diff_schedules(old, self.schedule)
         spills = [
             f"⚠ **{title_of(self.schedule, p.task_id)}** now runs {minutes} min into "
             f"**{event.title or event.id}**; fixed events never move"
@@ -125,11 +158,7 @@ class PlanningSession:
             for event in self.schedule.events
             if event.id == event_id
         ]
-        if spills:
-            self.changes = spills + [c for c in self.changes if not c.startswith("Nothing else")]
-        if self.observer:
-            self.observer.on_completion(p.task_id, p.start, end, p.end - p.start)
-            self.observer.on_plan("overrun", self.schedule)
+        return spills + [n for n in notes if not (spills and n.startswith("Nothing else"))]
 
     def _require_next(self) -> Placement:
         p = self.next_task()
@@ -138,24 +167,38 @@ class PlanningSession:
         return p
 
 
+def features_from_history(
+    hist: pd.DataFrame, user_id: object, day: int, tasks: Sequence[Task]
+) -> tuple[dict[str, dict[str, float]], tuple[float, int]]:
+    """History features for `tasks` planned on `day` for `user_id`, using only rows of `hist` from
+    earlier days. Also returns (the user's typical actual/estimate ratio, number of rows behind it)."""
+    queries = pd.DataFrame(
+        {"user_id": [user_id] * len(tasks), "day": day, "task_type": [t.type for t in tasks]},
+        index=[t.id for t in tasks],
+    )
+    feats = history_features(hist, queries)
+    summary = (1.0, 0)
+    if len(feats) and feats["user_n"].iloc[0] > 0:
+        summary = (math.exp(float(feats["user_lr_mean"].iloc[0])), int(feats["user_n"].iloc[0]))
+    return feats.to_dict(orient="index"), summary  # type: ignore[return-value]
+
+
 def persona_history(
     cfg: DataConfig, user_id: int, tasks: Sequence[Task]
 ) -> tuple[dict[str, dict[str, float]], tuple[float, int]]:
     """History features for `tasks` as if they belonged to synthetic user `user_id`, who has
-    `cfg.eval_start` days of logged history. Also returns (typical actual/estimate ratio, rows)."""
-    profile = next(u for u in sample_users(cfg.n_users, cfg.seed) if u.user_id == user_id)
+    `cfg.eval_start` days of logged history."""
+    profile = next(u for u in make_users(cfg) if u.user_id == user_id)
     hist = history_frame(generate_timeline(profile, cfg.eval_start, cfg.seed), cfg.seed)
-    queries = pd.DataFrame(
-        {"user_id": user_id, "day": cfg.eval_start, "task_type": [t.type for t in tasks]},
-        index=[t.id for t in tasks],
-    )
-    feats = history_features(hist, queries)
-    summary = (
-        (math.exp(float(feats["user_lr_mean"].iloc[0])), int(feats["user_n"].iloc[0]))
-        if len(feats)
-        else (1.0, 0)
-    )
-    return feats.to_dict(orient="index"), summary  # type: ignore[return-value]
+    return features_from_history(hist, user_id, cfg.eval_start, tasks)
+
+
+def log_history(
+    log_frame: pd.DataFrame, tasks: Sequence[Task], today: date | None = None
+) -> tuple[dict[str, dict[str, float]], tuple[float, int]]:
+    """History features for the app user from their own event log (`EventLog.history_frame`)."""
+    when = (today or date.today()).toordinal()
+    return features_from_history(log_frame[log_frame["user_id"] == APP_USER], APP_USER, when, tasks)
 
 
 def compare_estimators(

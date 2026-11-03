@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import re
+
 import pandas as pd
 
-from flowday.scheduler import Event, Task, fmt_time, hhmm
+from flowday.scheduler import ALL_WEEKDAYS, Event, Routine, Task, fmt_time, hhmm
 
 
 def _clock(value: object) -> int | None:
@@ -66,3 +68,58 @@ def parse_tasks(df: pd.DataFrame) -> tuple[list[Task], list[str]]:
         except (ValueError, TypeError) as exc:
             errors.append(f"Task row {int(str(i)) + 1}: {exc}")
     return tasks, errors
+
+
+DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def parse_weekdays(text: object) -> frozenset[int]:
+    """ "daily", "weekdays", "weekends", or a list like "Mon, Wed, Fri" -> weekday numbers (0 = Monday)."""
+    t = "" if text is None or (isinstance(text, float) and pd.isna(text)) else str(text).strip().lower()
+    if t in ("", "daily", "every day", "all"):
+        return ALL_WEEKDAYS
+    if t == "weekdays":
+        return frozenset(range(5))
+    if t == "weekends":
+        return frozenset({5, 6})
+    days: set[int] = set()
+    for token in re.split(r"[,\s]+", t):
+        if token:
+            if token[:3] not in DAY_NAMES:
+                raise ValueError(f"unknown day {token!r}")
+            days.add(DAY_NAMES.index(token[:3]))
+    return frozenset(days)
+
+
+def parse_routines(df: pd.DataFrame) -> tuple[list[Routine], list[str]]:
+    """Rows of (title, kind, time, minutes, type, priority, days) -> routines.
+
+    For a fixed routine `time` is its start (required); for a flexible one it is an optional deadline.
+    """
+    routines: list[Routine] = []
+    errors: list[str] = []
+    for i, row in df.iterrows():
+        if row.isna().all():
+            continue
+        try:
+            kind = str(row["kind"]).strip().lower()
+            when = _clock(row["time"])
+            if kind == "fixed" and when is None:
+                raise ValueError("a fixed routine needs a start time")
+            priority = int(row["priority"]) if not pd.isna(row["priority"]) else 3
+            routines.append(
+                Routine(
+                    id=f"r{len(routines) + 1}",
+                    title=str(row["title"] or f"Routine {len(routines) + 1}"),
+                    duration=int(row["minutes"]),
+                    kind=kind,
+                    start_minute=when if kind == "fixed" else None,
+                    deadline_minute=when if kind == "flexible" else None,
+                    task_type=str(row["type"]) if not pd.isna(row["type"]) else "routine",
+                    priority=priority,
+                    weekdays=parse_weekdays(row["days"]),
+                )
+            )
+        except (ValueError, TypeError) as exc:
+            errors.append(f"Routine row {int(str(i)) + 1}: {exc}")
+    return routines, errors

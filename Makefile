@@ -1,4 +1,4 @@
-.PHONY: install test coverage mutation lint typecheck check train evaluate figures app all
+.PHONY: install test coverage mutation lint typecheck check train evaluate figures app all synth-log retrain-from-log
 
 install:
 	uv sync
@@ -35,5 +35,14 @@ figures:
 
 app:
 	uv run streamlit run flowday/app/main.py
+
+# write synthetic days into a local event log (so retrain-from-log can be tried without real data)
+synth-log:
+	uv run python -m flowday.eventlog.simulate --db data/synthetic_log.db
+
+# retrain the estimators from an event log: make retrain-from-log LOG=data/flowday.db
+LOG ?= data/synthetic_log.db
+retrain-from-log:
+	uv run python -m flowday.models.retrain --db $(LOG)
 
 all: train evaluate

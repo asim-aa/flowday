@@ -152,4 +152,5 @@ class GBMEstimator:
         if self.model is None:
             raise RuntimeError("fit() first")
         log_ratio: np.ndarray = self.model.predict(self._matrix(df))
-        return df["estimate"].to_numpy(dtype=float) * np.exp(log_ratio)
+        predicted: np.ndarray = df["estimate"].to_numpy(dtype=float) * np.exp(log_ratio)
+        return predicted

@@ -145,7 +145,7 @@ PANELS = [
 ]
 
 
-def fig_schedule_outcomes(results: dict[str, Any], out: Path) -> None:
+def fig_schedule_outcomes(results: dict[str, Any], out: Path, reclaim: bool = False) -> None:
     names = list(LABELS)
     fig = _fig(figsize=(12, 6.6))
     axes = fig.subplots(
@@ -178,7 +178,7 @@ def fig_schedule_outcomes(results: dict[str, Any], out: Path) -> None:
     fig.text(
         0.01,
         0.95,
-        "End-to-end results: the scheduler run inside the simulator with each estimator",
+        f"End-to-end results: the scheduler run inside the simulator with each estimator{', early finishes reclaimed' if reclaim else ''}",
         fontsize=13,
         color=INK,
         weight="bold",
@@ -231,6 +231,11 @@ def make_figures(report_dir: Path = REPORT_DIR) -> list[Path]:
     if results_path.exists():
         fig_schedule_outcomes(json.loads(results_path.read_text()), out_dir / "fig3_schedule_outcomes.png")
         made.append(out_dir / "fig3_schedule_outcomes.png")
+    reclaim_path = report_dir / "schedule_results_reclaim.json"
+    if reclaim_path.exists():
+        target = out_dir / "fig3b_schedule_outcomes_reclaim.png"
+        fig_schedule_outcomes(json.loads(reclaim_path.read_text()), target, reclaim=True)
+        made.append(target)
     return made
 
 

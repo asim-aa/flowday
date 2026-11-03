@@ -37,7 +37,7 @@ def test_schema_enforces_its_constraints():
         log.log_completion("u", "a", 540, 570)  # one completion per task
     with pytest.raises(sqlite3.IntegrityError):
         log.log_completion("u", "a", 600, 600)  # must have positive length
-    assert log.db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() == ("1",)
+    assert log.db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() == ("2",)
 
 
 def test_plan_snapshot_records_events_tasks_completed_and_drops():
@@ -140,3 +140,100 @@ def test_estimator_planner_plans_are_logged_with_the_estimator_name():
     assert log.db.execute("SELECT DISTINCT estimator FROM plans").fetchall() == [("double",)]
     planned = log.db.execute("SELECT planned_minutes FROM plan_items WHERE kind='task' LIMIT 1").fetchone()[0]
     assert planned is not None and planned % 2 == 0
+
+
+# --- measured vs assumed durations, and schema migration -----------------------------------------------
+
+
+def test_assumed_durations_are_kept_but_excluded_from_training_data():
+    log = EventLog()
+    log.add_user("u", "demo")
+    s = build_schedule([], [Task("a", "x", 30), Task("b", "x", 30)], [(540, 1080)])
+    log.log_plan("u", "2026-01-05", s, "trust")
+    log.log_completion("u", "a", 540, 570, 30, measured=False)  # "done as planned": actual is just the plan
+    log.log_completion("u", "b", 570, 615, 30, measured=True)
+    assert log.count("completions") == 2
+    assert log.history_frame()["task_id"].tolist() == ["b"]
+    assert sorted(log.history_frame(measured_only=False)["task_id"]) == ["a", "b"]
+    with pytest.raises(sqlite3.IntegrityError):
+        log.db.execute("UPDATE completions SET measurement = 'guess' WHERE task_id = 'a'")
+
+
+def test_plan_triggers_are_constrained():
+    log = EventLog()
+    log.add_user("u", "demo")
+    s = build_schedule([], [Task("a", "x", 30)], [(540, 1080)])
+    for trigger in ("initial", "overrun", "early", "manual"):
+        log.log_plan("u", "2026-01-05", s, "trust", trigger=trigger)
+    with pytest.raises(sqlite3.IntegrityError):
+        log.log_plan("u", "2026-01-05", s, "trust", trigger="whenever")
+
+
+V1_SCHEMA = """
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+INSERT INTO meta VALUES ('schema_version', '1');
+CREATE TABLE users (user_id TEXT PRIMARY KEY, source TEXT NOT NULL
+    CHECK (source IN ('synthetic', 'demo', 'real')), created_at TEXT NOT NULL);
+CREATE TABLE tasks (user_id TEXT NOT NULL REFERENCES users(user_id), task_id TEXT NOT NULL, day TEXT NOT NULL,
+    task_type TEXT NOT NULL, estimated_minutes INTEGER NOT NULL CHECK (estimated_minutes > 0),
+    deadline_min INTEGER, priority INTEGER NOT NULL, title TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+    PRIMARY KEY (user_id, task_id));
+CREATE TABLE plans (plan_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL REFERENCES users(user_id),
+    day TEXT NOT NULL, created_at TEXT NOT NULL,
+    trigger TEXT NOT NULL CHECK (trigger IN ('initial', 'overrun', 'manual')), estimator TEXT NOT NULL,
+    parent_plan_id INTEGER REFERENCES plans(plan_id), now_min INTEGER NOT NULL);
+CREATE TABLE plan_items (plan_id INTEGER NOT NULL REFERENCES plans(plan_id), kind TEXT NOT NULL
+    CHECK (kind IN ('event', 'task', 'completed', 'dropped')), item_id TEXT NOT NULL, start_min INTEGER,
+    end_min INTEGER, planned_minutes INTEGER, drop_reason TEXT, drop_detail TEXT,
+    PRIMARY KEY (plan_id, kind, item_id));
+CREATE TABLE completions (completion_id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
+    task_id TEXT NOT NULL, started_min INTEGER NOT NULL, ended_min INTEGER NOT NULL CHECK (ended_min > started_min),
+    actual_minutes INTEGER NOT NULL, planned_minutes INTEGER, plan_id INTEGER REFERENCES plans(plan_id),
+    logged_at TEXT NOT NULL, FOREIGN KEY (user_id, task_id) REFERENCES tasks(user_id, task_id),
+    UNIQUE (user_id, task_id));
+INSERT INTO users VALUES ('demo-u', 'demo', 't'), ('syn-u', 'synthetic', 't');
+INSERT INTO tasks VALUES ('demo-u', 'a', '2026-01-05', 'coding', 30, NULL, 3, '', 't'),
+                         ('syn-u', 'b', '2026-01-05', 'coding', 30, NULL, 3, '', 't');
+INSERT INTO plans VALUES (1, 'demo-u', '2026-01-05', 't', 'initial', 'trust', NULL, 540),
+                         (2, 'demo-u', '2026-01-05', 't', 'overrun', 'trust', 1, 600);
+INSERT INTO plan_items VALUES (1, 'task', 'a', 540, 570, 30, NULL, NULL), (2, 'completed', 'a', 540, 600, 30, NULL, NULL);
+INSERT INTO completions VALUES (1, 'demo-u', 'a', 540, 600, 60, 30, 2, 't'), (2, 'syn-u', 'b', 540, 590, 50, 30, NULL, 't');
+"""
+
+
+def test_a_v1_database_is_migrated_in_place_without_losing_data(tmp_path: Path):
+    path = tmp_path / "old.db"
+    db = sqlite3.connect(path)
+    db.executescript(V1_SCHEMA)
+    db.commit()
+    db.close()
+    with EventLog(path) as log:
+        assert log.db.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() == ("2",)
+        assert [log.count(t) for t in ("users", "tasks", "plans", "plan_items", "completions")] == [
+            2,
+            2,
+            2,
+            2,
+            2,
+        ]
+        by_user = dict(log.db.execute("SELECT user_id, measurement FROM completions").fetchall())
+        assert by_user == {"demo-u": "assumed", "syn-u": "measured"}  # v1 demo rows could not say
+        assert log.db.execute("SELECT parent_plan_id FROM plans WHERE plan_id = 2").fetchone() == (1,)
+        assert log.db.execute("PRAGMA foreign_key_check").fetchall() == []
+        s = build_schedule([], [Task("n", "x", 30)], [(540, 1080)])
+        log.log_plan("demo-u", "2026-01-06", s, "trust", trigger="early")  # new trigger now allowed
+        assert log.history_frame()["task_id"].tolist() == ["b"]  # assumed row excluded from training
+    with EventLog(path) as again:  # reopening a migrated file is a no-op
+        assert again.count("completions") == 2
+
+
+def test_an_unknown_schema_version_is_refused(tmp_path: Path):
+    path = tmp_path / "future.db"
+    db = sqlite3.connect(path)
+    db.executescript(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); INSERT INTO meta VALUES ('schema_version', '99');"
+    )
+    db.commit()
+    db.close()
+    with pytest.raises(ValueError, match="unknown schema_version"):
+        EventLog(path)

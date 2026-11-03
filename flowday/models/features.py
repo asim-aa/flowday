@@ -7,8 +7,13 @@ A history table has one row per completed task with columns:
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+from typing import TypeVar
+
 import numpy as np
 import pandas as pd
+
+T = TypeVar("T", int, str)
 
 HISTORY_FEATURES = ["user_lr_mean", "user_n", "user_type_lr_mean", "user_type_n"]
 BASE_COLUMNS = ["task_type", "estimate", "hour"]
@@ -59,16 +64,17 @@ def add_history_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def split_users(
-    user_ids: list[int] | np.ndarray, seed: int, fractions: tuple[float, float, float] = (0.6, 0.2, 0.2)
-) -> dict[str, list[int]]:
-    """Randomly assign whole users to train / val / test. Rows of one user never straddle sets."""
-    ids = np.array(sorted(set(int(u) for u in user_ids)))
-    rng = np.random.default_rng([seed, 0x5917])
-    rng.shuffle(ids)
+    user_ids: Iterable[T], seed: int, fractions: tuple[float, float, float] = (0.6, 0.2, 0.2)
+) -> dict[str, list[T]]:
+    """Randomly assign whole users (int or str ids) to train / val / test. Rows of one user never
+    straddle sets."""
+    ids = sorted(set(user_ids))
+    order = np.random.default_rng([seed, 0x5917]).permutation(len(ids))
+    shuffled = [ids[i] for i in order]
     n_train = round(len(ids) * fractions[0])
     n_val = round(len(ids) * fractions[1])
     return {
-        "train": sorted(int(u) for u in ids[:n_train]),
-        "val": sorted(int(u) for u in ids[n_train : n_train + n_val]),
-        "test": sorted(int(u) for u in ids[n_train + n_val :]),
+        "train": sorted(shuffled[:n_train]),
+        "val": sorted(shuffled[n_train : n_train + n_val]),
+        "test": sorted(shuffled[n_train + n_val :]),
     }

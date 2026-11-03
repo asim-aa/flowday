@@ -100,10 +100,9 @@ class EstimatorPlanner:
     def initial(self, day: DayLike) -> Schedule:
         return self.plan(day.events, day.tasks, day.windows)
 
-    def replan(self, schedule: Schedule, now: int, overrun: Overrun) -> Schedule:
-        remaining = [
-            t for t in schedule.tasks if t.id not in schedule.completed_ids and t.id != overrun.task_id
-        ]
+    def replan(self, schedule: Schedule, now: int, overrun: Overrun | None) -> Schedule:
+        skip = overrun.task_id if overrun else None
+        remaining = [t for t in schedule.tasks if t.id not in schedule.completed_ids and t.id != skip]
         hours = {t.id: (now % MINUTES_PER_DAY) / 60 for t in remaining}
         hours.update({p.task_id: (p.start % MINUTES_PER_DAY) / 60 for p in schedule.placements})
         return self._refine(

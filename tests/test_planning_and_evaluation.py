@@ -173,7 +173,7 @@ def test_summarize_means_and_paired_differences_by_hand():
 
 def test_task_features_defaults_to_a_new_user():
     f = task_features([Task("a", "coding", 30)])
-    assert f.loc["a", "user_n"] == 0 and np.isnan(f.loc["a", "user_lr_mean"])
+    assert f.loc["a", "user_n"] == 0 and np.isnan(float(f["user_lr_mean"].iloc[0]))
     assert list(f.columns) == FEATURE_COLUMNS
     with pytest.raises(KeyError):
         EstimatorPlanner(TrustEstimate(), f).predict_minutes([replace(Task("b", "x", 5))], {"b": 9.0})

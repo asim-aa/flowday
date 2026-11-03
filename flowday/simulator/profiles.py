@@ -66,15 +66,19 @@ class UserProfile:
     tod_scale: float  # multiplier on time-of-day sensitivity
     noise_sigma: float  # log-scale noise
     rounding: int  # the user rounds estimates to multiples of this many minutes
+    bias_scale: float = 1.0  # sensitivity knob: scales every systematic effect (type, size, time of day)
 
     def log_ratio_mean(self, task_type: str, estimate: float, hour: float) -> float:
         spec = TASK_TYPES[task_type]
-        return (
+        total = (
             math.log(spec.factor)
             + self.offset
             + self.size_slope * math.log(max(estimate, 1.0) / 30.0)
             + self.tod_scale * spec.tod_sensitivity * tod_shape(hour, self.peak_hour)
         )
+        if self.bias_scale == 1.0:
+            return total
+        return self.offset + self.bias_scale * (total - self.offset)
 
     def median_minutes(self, task_type: str, estimate: float, hour: float) -> float:
         """The true conditional median duration. Not available to any real estimator; used only
@@ -87,11 +91,20 @@ class UserProfile:
         return max(NOISE_FLOOR_MINUTES, round(estimate * math.exp(log_ratio)))
 
 
-def sample_users(n: int, seed: int, first_id: int = 0, offset_shift: float = 0.0) -> list[UserProfile]:
+def sample_users(
+    n: int,
+    seed: int,
+    first_id: int = 0,
+    offset_shift: float = 0.0,
+    bias_scale: float = 1.0,
+    noise_scale: float = 1.0,
+) -> list[UserProfile]:
     """Draw `n` synthetic users deterministically from `seed`.
 
-    `offset_shift` adds a constant to every user's log-bias, to build populations that underestimate
-    more (or less) than the training population for distribution-shift tests."""
+    Knobs for stress and sensitivity tests (all neutral at their defaults, which reproduce the
+    committed results exactly): `offset_shift` adds a constant to every user's log-bias;
+    `bias_scale` multiplies the systematic effects (type, size, time of day); `noise_scale`
+    multiplies each user's noise."""
     rng = np.random.default_rng([seed, 0xF10D])
     users = []
     for i in range(n):
@@ -102,8 +115,9 @@ def sample_users(n: int, seed: int, first_id: int = 0, offset_shift: float = 0.0
                 size_slope=float(np.clip(rng.normal(0.08, 0.04), 0.0, None)),
                 peak_hour=float(np.clip(rng.normal(11.0, 2.0), 8.0, 15.0)),
                 tod_scale=float(rng.lognormal(0.0, 0.3)),
-                noise_sigma=float(np.clip(rng.lognormal(math.log(0.22), 0.25), 0.08, 0.5)),
+                noise_sigma=float(np.clip(rng.lognormal(math.log(0.22), 0.25), 0.08, 0.5)) * noise_scale,
                 rounding=int(rng.choice([5, 15], p=[0.7, 0.3])),
+                bias_scale=bias_scale,
             )
         )
     return users
