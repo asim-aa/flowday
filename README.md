@@ -13,16 +13,17 @@ tasks *actually* take compared with what the user estimated, and replans when a 
 ## Contents
 
 1. [The problem](#the-problem)
-2. [Quick start](#quick-start)
-3. [How it fits together](#how-it-fits-together)
-4. [The scheduler: algorithm and tradeoffs](#the-scheduler-algorithm-and-tradeoffs)
-5. [Synthetic data, and why results do not prove real-world benefit](#synthetic-data)
-6. [Duration models](#duration-models)
-7. [End-to-end evaluation](#end-to-end-evaluation)
-8. [Event log](#event-log)
-9. [The app](#the-app)
-10. [Tests and quality](#tests-and-quality)
-11. [Limitations and next steps](#limitations-and-next-steps)
+2. [The idea in seven steps](#the-idea-in-seven-steps) (start here if you want the whole argument in two minutes)
+3. [Quick start](#quick-start)
+4. [How it fits together](#how-it-fits-together)
+5. [The scheduler: algorithm and tradeoffs](#the-scheduler-algorithm-and-tradeoffs)
+6. [Synthetic data, and why results do not prove real-world benefit](#synthetic-data)
+7. [Duration models](#duration-models)
+8. [End-to-end evaluation](#end-to-end-evaluation)
+9. [Event log](#event-log)
+10. [The app](#the-app)
+11. [Tests and quality](#tests-and-quality)
+12. [Limitations and next steps](#limitations-and-next-steps)
 
 ## The problem
 
@@ -41,6 +42,76 @@ FlowDay separates two jobs:
 The scheduler only ever sees a number of minutes per task, so estimators are swappable, which is what
 makes the comparison in this README possible.
 
+```mermaid
+flowchart TB
+    U["You<br/>tasks, your own estimates,<br/>fixed events, deadlines"]
+    H[("What your past tasks<br/>really took")]
+    E["Duration estimator (swappable)<br/>trust · multiplier · per-type median<br/>GBM q50 · GBM q80"]
+    S["Scheduler<br/>deterministic, no ML"]
+    P["Plan<br/>conflict-free; what does not fit<br/>is dropped with a reason"]
+    D(["The day happens"])
+    R["Replan<br/>fixed events and finished work never move"]
+    L[("Event log<br/>SQLite")]
+    U --> E
+    H --> E
+    E -->|"minutes per task"| S
+    S --> P
+    P --> D
+    D -->|"a task overruns<br/>or finishes early"| R
+    R --> P
+    D -->|"measured durations"| L
+    L -->|"retrain"| H
+```
+
+## The idea in seven steps
+
+This is the argument of the whole project, with the path I took to it. Each step is a question; the next
+step exists because the previous one answered it or exposed a weak spot.
+
+```mermaid
+flowchart TB
+    A["1 · Claim<br/>trusted estimates over-promise"] --> B["2 · Split the system<br/>deterministic scheduler + swappable estimator"]
+    B --> C["3 · No real data<br/>labelled simulator, same days for every estimator"]
+    C --> D["4 · Learn durations<br/>3 baselines, then GBM point + quantiles"]
+    D --> E["5 · Test end to end<br/>scheduler inside the simulator, replan on overruns"]
+    E --> W
+    subgraph W["6 · Follow each weak spot the test exposed"]
+        direction LR
+        F1["caution leaves<br/>idle time"] -->|"so"| F2["reclaim early<br/>finishes"]
+        F2 -->|"moves ~7 start<br/>times a day, so"| F3["minimum-gain<br/>threshold"]
+        G1["quantiles fail<br/>for new users"] -->|"so"| G2["distribution-<br/>shift test"]
+        H1["only my own<br/>parameters varied"] -->|"so"| H2["sweep incl. heavy<br/>tails and drift"]
+        H2 -->|"habits<br/>change, so"| H3["drift check"]
+    end
+    W --> K["7 · Audit my own work<br/>bugs found, fixed and disclosed"]
+```
+
+1. **Is the claim even true?** People plan from their own estimates, and those are biased low. A planner that
+   believes them should over-promise. Everything is measured against that baseline, "trust the user".
+2. **How do I make the comparison fair?** I split the system in two: a deterministic scheduler with no ML
+   (so it can be tested exhaustively) and a duration estimator that only hands it a number of minutes per
+   task. Swapping the estimator is then the only thing that changes between plans. The scheduler is checked
+   against a brute-force oracle and by injecting bugs to see that the tests notice.
+3. **Where does data come from?** There is none that is real, so I wrote a documented bias model (task
+   type, size, time of day, a personal offset, noise) and labelled everything `synthetic`. Every estimator
+   sees the same days and the same hidden noise. The price: results show the method works *when its
+   assumptions hold*, nothing more.
+4. **How much of the bias can be learned?** Three baselines (trust, one global multiplier, a per-type
+   median), then a gradient-boosted model with past-only history features, split by user. Against a noise
+   floor of 11.3 minutes the GBM scores 11.7 and trust 23.1. The per-type median (14.6) is a strong
+   baseline, and the quantile models are calibrated in-distribution.
+5. **Does a better number make a better day?** Run the scheduler inside the simulator, let tasks take their
+   true duration, replan on overruns. ML planning cuts missed deadlines from 0.17 to 0.05 a day and minutes
+   spilling into meetings from 11.2 to 2.6, and it is paid for in throughput: trusting the user completes
+   the most tasks (5.28 vs 5.07) by over-committing.
+6. **What did that expose?** Each weak spot became the next piece of work: idle time from caution led to
+   reclaiming early finishes; that reshuffled about seven start times a day, which led to a minimum-gain
+   threshold; quantiles that fail for new users led to the distribution-shift test; "I only varied my own
+   parameters" led to a sweep that includes heavy-tailed noise and drifting habits; changing habits led to a
+   drift check.
+7. **Can I trust my own work?** I audited it. The validator had silently lost four checks, and the baselines
+   took a median on the wrong scale. Both are fixed and disclosed below instead of quietly corrected.
+
 ## Quick start
 
 Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+.
@@ -54,20 +125,22 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+.
 | `make mutation` | inject known bugs into the scheduler; every non-equivalent one must be caught | ~1 min |
 | `make train` | generate synthetic data, tune and train models, write `artifacts/` and `reports/model_metrics.json` | 1 to 3 min |
 | `make evaluate` | run the scheduler end to end with every estimator, early finishes not reclaimed and reclaimed; write `reports/` and figures | 2 to 4 min |
-| `make sensitivity` | feature ablation, generator sweep over noise / bias / seeds, and the caution frontier | ~15 to 20 min |
+| `make sensitivity` | feature ablation, generator sweep (seeds, noise, bias, heavy tails, drifting habits), the caution frontier, the reclaim threshold and the drift check | ~20 to 25 min |
 | `make figures` | regenerate the figures from the JSON reports | seconds |
 | `make app` | launch the Streamlit app (run `make train` first for the ML estimators) | |
 | `make synth-log`, `make retrain-from-log` | write a synthetic event log, then retrain the models from a log | seconds |
 
 Timings are on a laptop that was also busy with other work; they vary a lot with load.
 
-Everything is seeded. Re-training and re-running the evaluation in a fresh clone reproduced the committed
-`reports/` byte for byte (checked with `git diff`). One exception, disclosed: in my first run of
-`make sensitivity`, one of its seven simulated worlds (base, seed 2) differed slightly from a clean rerun,
-probably because it ran while I was editing scheduler files. The committed file is the clean fresh-clone
-output, and an independent recompute of that world matched it exactly. Generated data (`data/`) and trained models
-(`artifacts/`) are git-ignored. CI (`.github/workflows/ci.yml`) runs `make check` on Python 3.11, 3.12 and
-3.13; I ran the same locally on all three, but the workflow itself has not run on GitHub yet.
+Everything is seeded. Re-training and re-running the evaluation reproduced the committed `reports/` byte for
+byte (checked with `git diff`, in a fresh clone for the first version and again in the working tree after the
+latest changes, which left every earlier number untouched). One exception, disclosed: in my first run of
+`make sensitivity`, one of its simulated worlds (base, seed 2) differed slightly from a clean rerun,
+probably because it ran while I was editing scheduler files. The committed file is the clean output, an
+independent recompute of that world matched it exactly, and a full rerun after the latest changes
+reproduced it again. Generated data (`data/`) and trained models (`artifacts/`) are git-ignored. CI (`.github/workflows/ci.yml`) runs `make check` on Python 3.11, 3.12 and
+3.13; I ran the same locally on all three for the previous commit, and the workflow passed on GitHub (Linux)
+for it.
 
 ## How it fits together
 
@@ -112,6 +185,20 @@ are non-preemptible: each gets one contiguous slot inside a single free gap.
    calendar, with the longest free gap quoted) or `capacity` (fits alone, but not beside the
    higher-priority tasks, which are named).
 
+```mermaid
+flowchart TB
+    T["Tasks with durations"] --> O["Sort: priority, then deadline,<br/>then shorter, then id"]
+    O --> N{"Next task: can it be sequenced with every<br/>task admitted so far, meeting all deadlines?<br/>(exact search, node budget)"}
+    N -->|"yes"| A["Admit"]
+    N -->|"no, not even alone"| X1["Drop: no_fit_alone<br/>(longest free gap quoted)"]
+    N -->|"no, fits alone only"| X2["Drop: capacity<br/>(higher-priority tasks named)"]
+    A --> M{"More tasks?"}
+    X1 --> M
+    X2 --> M
+    M -->|"yes"| N
+    M -->|"no"| Z["Place everything admitted,<br/>left-packed, around fixed events"]
+```
+
 The search is complete: if any sequencing meets every deadline, some earliest-fit-after-the-previous-task
 sequencing does (shifting any task left to its earliest fit cannot hurt a deadline), so with the budget
 not hit, **nothing is dropped whenever everything fits.**
@@ -122,6 +209,25 @@ from `max(now, that end)`. It never changes fixed events or completed work. Task
 `now` but never completed are treated as not done, and previously dropped tasks get another chance.
 Fixed events are never moved even if the overrunning task ran into one: that collision is reported
 (`collisions()`), not hidden.
+
+```mermaid
+gantt
+    title One overrun, replanned (illustrative: fixed events stay put, finished work is frozen)
+    dateFormat HH:mm
+    axisFormat %H:%M
+    section Plan at 09:00
+    Standup (fixed)                  :crit, e1, 09:00, 30m
+    Write report                     :a1, 09:30, 60m
+    Email                            :a2, 10:30, 30m
+    Review PR                        :a3, 11:00, 60m
+    Lunch (fixed)                    :crit, e2, 12:00, 60m
+    section Report ran 30 min over, replanned at 11:00
+    Standup (fixed)                  :crit, f1, 09:00, 30m
+    Write report (actual)            :done, b1, 09:30, 90m
+    Email                            :b2, 11:00, 30m
+    Lunch (fixed)                    :crit, f2, 12:00, 60m
+    Review PR (no longer fits before lunch) :b3, 13:00, 60m
+```
 
 **Recurring routines** (`Routine`, `expand_routines`) expand a daily or per-weekday pattern into fixed
 events (a study block at 19:00) or flexible tasks (study for 60 minutes before 21:00). A flexible instance
@@ -201,6 +307,10 @@ plus a post-lunch dip around 14:00.
 | base actual/estimate | 1.00 | 1.10 | 1.10 | 1.15 | 0.95 | 1.20 | 1.35 | 1.40 |
 | time-of-day sensitivity | 0.10 | 0.10 | 0.05 | 0.20 | 0.05 | 0.30 | 0.35 | 0.30 |
 
+Two optional departures from this form exist, off by default and used only by the sensitivity sweep:
+`tail_df` draws `z` from a Student-t (scaled to unit variance) so a few tasks blow up, and `drift_sd` gives
+each user a habit whose bias drifts linearly with the day at a personal rate.
+
 After all effects, the median actual/estimate in the generated data is 1.23 overall (mean 1.32): coding
 1.66, writing 1.60, study 1.40, meeting prep 1.23, admin 1.12, errands 1.11, email 1.00, exercise 1.00. Each synthetic day has 1 to 3
 meetings and 4 to 8 tasks; about 55% of tasks have a same-day deadline. Hidden noise is drawn once per
@@ -214,13 +324,15 @@ random numbers).
   noise floor (below) says the pipeline works, not that human durations are this learnable.
 - **The biases are my assumptions**, loosely inspired by the planning-fallacy literature, not measured.
   Magnitudes, the type ranking and the time-of-day curve could all be wrong in reality.
-- **Nothing is non-stationary.** Real people change habits, have good and bad weeks, get interrupted, and
-  change their estimates *because* a planner exists. Here each user's parameters are frozen.
+- **Almost nothing is non-stationary.** Real people change habits, have good and bad weeks, get interrupted,
+  and change their estimates *because* a planner exists. Here each user's parameters are frozen, except in one
+  sweep world where every user's bias drifts steadily (below).
 - **Plans are followed perfectly.** No one skips a task, reorders, takes a call, or ignores the app.
 - **Tasks are independent and clean.** Real task types are messy free text, not eight clean labels.
 - **A narrow set of design choices.** The headline numbers come from one seed. The sensitivity runs below
-  vary the seed, the noise and the bias strength, and the direction of the results holds, but the model
-  family and the estimator set were not varied. Intervals reflect sampling noise over simulated users, not
+  vary the seed, the noise and the bias strength, and add two departures from the generator's form (heavy
+  tails, drifting habits). The direction of the results holds, but the model family and the estimator set
+  were not varied, and both departures are still mild. Intervals reflect sampling noise over simulated users, not
   uncertainty about the simulator itself.
 - **Calibration is in-distribution.** The stress test below shows how quickly that breaks.
 
@@ -240,10 +352,20 @@ once the model has personal history to correct for (it sees each user's past act
 That is a feature of how this particular model uses history, and it is the kind of failure to expect from
 real data too.
 
+I tried the obvious repair, `scripts/anchor_experiment.py`: train on the log-ratio minus the user's shrunk
+history mean and add it back, so the part that has to extrapolate is linear (trees cannot extrapolate, and
+shifted users sit well outside the training range). In-distribution nothing changes, but in the first shifted
+week q80 coverage only moves from 0.68 to 0.72 (target 0.80). Most of the gap is tasks with no history at all
+(14% of first-week tasks, which the trained q80 covers 41% of), and nothing built from history can fix
+those. So it was **not adopted**, and no headline number depends on it. What would help is faster feedback
+from the first few completions or a population prior that adapts, neither of which exists here.
+
 **Sensitivity to the simulator's own parameters.** `make sensitivity` regenerates the world with different
-random seeds, with the noise doubled or halved, and with the systematic biases scaled by 0.5 or 1.5,
-retraining and re-running the end-to-end evaluation each time (250 users per world, so the base row differs
-slightly from the headline run):
+random seeds, with the noise doubled or halved, with the systematic biases scaled by 0.5 or 1.5, and in two
+worlds that change the *form* of the generator (heavy-tailed noise: Student-t with 4 degrees of freedom at the
+same variance; drifting habits: each user's bias changes linearly at a personal rate, sd 0.003 log-units a
+day, about 0.27 by day 90). It retrains and re-runs the end-to-end evaluation each time (250 users per world,
+so the base row differs slightly from the headline run):
 
 | World | median actual/estimate | MAE trust / per-type / GBM | Deadlines missed: trust → GBM → q80 | Min spilling into events: trust → GBM |
 |---|---|---|---|---|
@@ -254,15 +376,33 @@ slightly from the headline run):
 | noise x2 | 1.25 | 31.6 / 25.7 / 23.6 | 0.23 → 0.10 → 0.03 | 16.4 → 6.6 |
 | bias x0.5 | 1.12 | 14.0 / 11.8 / 9.2 | 0.12 → 0.05 → 0.02 | 5.5 → 1.8 |
 | bias x1.5 | 1.36 | 36.6 / 19.8 / 14.1 | 0.29 → 0.06 → 0.02 | 18.2 → 2.4 |
+| heavy-tailed noise | 1.23 | 23.7 / 14.9 / 10.8 | 0.18 → 0.04 → 0.01 | 11.0 → 2.2 |
+| drifting habits | 1.25 | 24.8 / 17.8 / 11.9 | 0.20 → 0.05 → 0.02 | 11.8 → 2.0 |
 
-The direction of every result is the same in all seven worlds: the ML plan misses fewer deadlines and spills
+The direction of every result is the same in all nine worlds: the ML plan misses fewer deadlines and spills
 into fewer events than trusting the user, and the cautious plan misses fewer still. What moves is the size of
 the gain. Across three seeds the GBM's error varies by about a minute (11.3 to 12.5). The GBM's edge over the
 per-type median is largest when noise is low (5.9 vs 11.5) and shrinks to about two minutes when noise is
 doubled (23.6 vs 25.7), as expected when most of the variation is irreducible. Weaker biases (x0.5) make
 trusting the user less bad (0.12 missed deadlines a day vs 0.29 at x1.5) and leave less for the model to
-fix. This varies parameters the model structure already represents; it does not test a different *kind* of
-misspecification such as drifting habits or heavy-tailed durations.
+fix.
+
+The last two rows are the ones that change the generator's form, and neither breaks anything. **Heavy tails**
+barely move the error (GBM 10.8 minutes) and leave the quantiles calibrated (q50 / q80 coverage 0.50 / 0.81):
+the pinball loss does not care about a few extreme tasks, and at equal variance heavy tails put *more* mass
+near the median, so absolute error is not a harder test here. **Drifting habits** hurt the per-type median
+most (15.1 to 17.8 minutes) and the GBM least (11.3 to 11.9), so the GBM's edge over the median grows (-6.0
+minutes against -3.8), because its history features follow a user's recent ratios, if with a lag. These are
+two mild departures that are still log-linear plus noise; a step change in habits, tasks that depend on each
+other, or a user who changes their estimates in response to the planner were not tried. I would not read
+"robust" into this beyond what the rows show.
+
+The **drift check** (below, under the event log) fires on 28 of 100 users in the drifting world and 2 of
+100 in a stable one (14-day window, |z| > 3). Detection follows how fast a user drifts: it flagged 2 of the
+50 slowest-drifting users (a typical shift of under 0.1 on the log scale between the window and what came
+before, which is inside the noise) and 16 of the 25 fastest. Two percent false alarms is more than the 0.3%
+a normal approximation would promise; I did not investigate why (non-independent residuals within a user are
+the likely cause), so treat |z| > 3 as a rough setting, not a calibrated one.
 
 ## Duration models
 
@@ -353,6 +493,21 @@ durations and is an unattainable reference. Because durations depend on start ti
 on durations, hour-dependent estimators size tasks, schedule, re-size each task for the slot it landed in,
 and schedule again (two passes).
 
+```mermaid
+flowchart TB
+    G["Simulator: one synthetic day<br/>events, tasks, estimates, and hidden noise drawn once per task"]
+    P1["Plan with<br/>trust"]
+    P2["Plan with<br/>per-type median"]
+    P3["Plan with<br/>GBM / GBM q80"]
+    P4["Plan with oracle<br/>(true durations)"]
+    X["Live the day: every task takes its TRUE duration<br/>overrun → replan · early finish → optionally pull the day forward"]
+    M["Per-day metrics<br/>missed deadlines · replans · idle · dropped · spill into events · overtime · completed"]
+    C["Paired difference against trust,<br/>95% CI from resampling whole users"]
+    G --> P1 & P2 & P3 & P4
+    P1 & P2 & P3 & P4 --> X
+    X --> M --> C
+```
+
 Per simulated day, mean with 95% CI (resampling users):
 
 | Estimator | Deadlines missed | Replans | Idle min | Tasks dropped | Min spilling into fixed events | Overtime min | Tasks completed |
@@ -428,10 +583,27 @@ table counts, summed over a day's replans, how many not-yet-started tasks had th
 | Oracle (true durations) | 28.6 → 28.4 | 0.0 → 0.0 | 0.84 |
 
 An overrun replan is local: it moves about 1.3 to 1.7 upcoming tasks. Reclaiming turns every early finish into
-a replan too, so a day now reshuffles about 7 start times, which a person might well find disruptive. The app
-reclaims by default, since an unused gap is rarely what someone wants, but it has no threshold yet; a
-minimum-gain rule is the obvious fix and is left as a next step. Trusting the user still completes the most tasks (5.30 per day vs 5.12 for the median GBM)
-for the reasons given above.
+a replan too, so a day now reshuffles about 7 start times, which a person might well find disruptive. Trusting the user still completes the most tasks (5.30 per day vs 5.12 for the median GBM) for the reasons
+given above.
+
+**A minimum gain.** Most of those pull-forwards move the day for a few minutes. `reclaim_min_gain` pulls the
+day forward only when an early finish frees at least that many minutes (cautious q80 plan, same days):
+
+| Reclaim if an early finish frees at least | Idle min | Tasks moved by replans per day | Pull-forwards per day | Tasks completed |
+|---|---|---|---|---|
+| never reclaim | 65.1 | 1.1 | 0 | 4.80 |
+| 1 min (everything) | 33.7 | 6.5 | 2.5 | 4.91 |
+| 5 min | 35.5 | 5.0 | 1.8 | 4.91 |
+| **10 min (app default)** | 39.8 | 3.6 | 1.1 | 4.90 |
+| 15 min | 44.2 | 2.7 | 0.7 | 4.88 |
+| 20 min | 48.2 | 2.2 | 0.5 | 4.87 |
+
+Deadlines missed stay at 0.02 throughout. A 10-minute threshold keeps about 80% of the idle-time saving
+(65 to 40 against 65 to 34) and removes about half of the extra churn (3.6 against 6.5, from a floor of 1.1).
+That is a knee in one sweep, not an optimum: for the median GBM the same threshold moves churn from 7.0
+to 4.5 and idle time from 28 to 33, and for trusting the user it keeps only 37% of the idle-time saving. The
+simulator reclaims everything by default (threshold 0); the app uses 10 and exposes it in the sidebar. The
+full tables, with confidence intervals, are in `reports/sensitivity.md`.
 
 ### The price of caution
 
@@ -506,8 +678,12 @@ synthetic log (20 users, 40 days, 4,242 completions, 4 held-out users, so treat 
 | 17.0 | 14.8 | 12.0 | 10.1 | 13.7 |
 
 That shows the path from logged completions to a fitted model works end to end and ranks the estimators as
-before. It is not a claim about real data, and nothing retrains automatically: there is no scheduler, drift
-detection or champion/challenger comparison.
+before. It is not a claim about real data, and nothing retrains automatically: there is no scheduler or
+champion/challenger comparison. If a model from an earlier run is already in place, the command first runs a
+**drift check** on it, per user: the model's log-scale errors over the last 14 days against the earlier
+ones (Welch z on the means, flagged when |z| > 3, skipped when either side has fewer than 20 completions).
+It reports; it does not retrain. On synthetic users it flagged 2 of 100 whose habits were stable and 28 of
+100 whose habits drifted (`make sensitivity`).
 
 ## The app
 
@@ -534,17 +710,18 @@ out; drop reasons showed internal task ids instead of titles).
 
 ## Tests and quality
 
-- **181 tests** (about 95% line coverage of the package, measured with `make coverage`): unit,
+- **192 tests** (about 95% line coverage of the package, measured with `make coverage`): unit,
   hypothesis property-based (scheduler, replanning, feature leakage, whole days of clicks through the app
   session), headless Streamlit (including routines, early finishes, the caution slider and retraining on the
   user's own log), a real v1 to v2 database migration, the CLIs, the figures, and a mini end-to-end check that
   ML beats trusting the user on a small simulated population. Parallel and serial simulation are checked to
   give identical results.
 - `make check` runs `ruff`, **strict** `mypy` on the package, `mypy` on the tests (untyped test functions
-  allowed), and the tests. It is what CI runs on Python 3.11, 3.12 and 3.13. Locally it passes (181 tests) in
-  fresh clones of the final commit on Python 3.11 and 3.12 and in my development environment on 3.13. The
-  first 3.11 run had failed type-checking on two lines because of different numpy stubs; that is fixed. The
-  GitHub workflow itself has not been run yet.
+  allowed), and the tests. It is what CI runs on Python 3.11, 3.12 and 3.13. The latest changes pass it
+  (192 tests) in my development environment on 3.13; the commit before them also passed in fresh clones on
+  3.11 and 3.12 and on GitHub Actions (Linux, 3.11 to 3.13), and the latest ones have not yet been run on
+  those. The first 3.11 run had failed type-checking on two lines because of different numpy stubs; that is
+  fixed.
 - `make mutation` (see [above](#the-scheduler-algorithm-and-tradeoffs)) checks that the property tests fail
   when the scheduler is deliberately broken.
 - Mistakes in my own work that the tests, the browser check or the sensitivity runs found, and that are fixed:
@@ -563,8 +740,9 @@ out; drop reasons showed internal task ids instead of titles).
   own parameters; they cannot say anything about real people.
 - The scheduler is greedy on priority over an exact feasibility check, so it can drop more value than an
   optimal selection; no solver comparison was done. No task splitting, dependencies, travel time or buffers.
-- Reclaiming early finishes (opt-in in the simulator, always on in the app) cuts idle time but reshuffles
-  many start times (see the churn numbers); there is no minimum-gain threshold or "freeze the next hour".
+- Reclaiming early finishes (opt-in in the simulator, on in the app with a 10-minute minimum gain) cuts idle
+  time but still moves start times; the threshold is a knee read off one sweep, not an optimum, and there is
+  no "freeze the next hour" rule.
 - Non-preemptible tasks: an overrun cannot be split around a meeting; it collides instead.
 - The evaluation and experiments plan one day at a time. The scheduler supports multi-day windows and
   routines (tested, including through the estimator planner) and the app applies routines to the chosen
@@ -573,20 +751,21 @@ out; drop reasons showed internal task ids instead of titles).
   pre-generated history), which keeps estimators comparable but is not how a deployed system would learn.
 - The 80th percentile is one point on a measured frontier; nothing here chooses a quantile from the real
   cost of an overrun versus a drop, and the "how cautious?" slider leaves that to the user.
-- Retraining from a log is manual and its held-out check is rough on small logs; there is no drift
-  detection, scheduled retraining, or comparison against the model in use.
-- Only developed and run on macOS (Apple silicon). The CI workflow targets Linux but has not run on GitHub
-  yet; Windows is untested.
+- Retraining from a log is manual and its held-out check is rough on small logs. `retrain-from-log` runs a
+  drift check on the model it is about to replace, but nothing acts on it: there is no scheduled retraining,
+  no champion/challenger comparison, and the check has only ever seen synthetic drift.
+- Only developed and run on macOS (Apple silicon). The CI workflow (Linux, Python 3.11 to 3.13) has passed on
+  GitHub for the previous commit; Windows is untested.
 
 **Next steps, in rough order of value**
 
 1. Run on real logged data (the event log, `retrain-from-log` and the measured-versus-assumed distinction are
    ready for it) before believing any number here; start by checking whether the type ratios and the
    cold-start behaviour look anything like the simulator's.
-2. Add a minimum-gain threshold to reclaiming (pull the day forward only when it saves enough) and measure
-   the churn it removes.
-3. Choose the planning quantile per task from the cost of an overrun (deadline, event collision) versus a
+2. Choose the planning quantile per task from the cost of an overrun (deadline, event collision) versus a
    drop, rather than a global q50 or q80.
+3. Give the model a recency-weighted view of a user's history (the history features are all-time means, so
+   they lag when habits change), and act on the drift check (retrain, or fall back to a baseline).
 4. Task splitting and dependencies; user preferences for when to do which work.
-5. Online learning and drift detection, since real habits change.
+5. A multi-day evaluation with routines and tasks that carry over.
 6. Compare against an optimal solver (MILP / CP-SAT) on small instances to quantify the greedy gap.
