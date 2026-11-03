@@ -62,6 +62,29 @@ def test_reclaiming_is_a_no_op_when_nothing_finishes_early_or_nothing_is_left():
     assert simulate_day(crafted(-0.5, n=1), TrustPlanner(), reclaim_early=True).pull_forwards == 0
 
 
+def test_min_gain_skips_early_finishes_that_free_too_little_time():
+    # each 30-minute task of crafted(-0.5) takes 18 minutes, freeing 12
+    assert (
+        simulate_day(crafted(-0.5), TrustPlanner(), reclaim_early=True, reclaim_min_gain=12).pull_forwards
+        == 1
+    )
+    kept = simulate_day(crafted(-0.5), TrustPlanner(), reclaim_early=True, reclaim_min_gain=13)
+    assert kept.as_row() == simulate_day(crafted(-0.5), TrustPlanner()).as_row() and kept.pull_forwards == 0
+
+
+def test_an_unreachable_min_gain_is_the_same_as_not_reclaiming():
+    for user in sample_users(6, 12):
+        for day in generate_timeline(user, 4, 12):
+            never = simulate_day(day, EstimatorPlanner(Cautious(), task_features(day.tasks)))
+            gated = simulate_day(
+                day,
+                EstimatorPlanner(Cautious(), task_features(day.tasks)),
+                reclaim_early=True,
+                reclaim_min_gain=10_000,
+            )
+            assert gated.as_row() == never.as_row()
+
+
 class Cautious:
     """Plans 1.6x the user's estimate, so most tasks finish early."""
 

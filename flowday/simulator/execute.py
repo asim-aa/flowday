@@ -91,7 +91,11 @@ class DayOutcome:
 
 
 def simulate_day(
-    day: SyntheticDay, planner: Planner, observer: Observer | None = None, reclaim_early: bool = False
+    day: SyntheticDay,
+    planner: Planner,
+    observer: Observer | None = None,
+    reclaim_early: bool = False,
+    reclaim_min_gain: int = 0,
 ) -> DayOutcome:
     """Run `day` with `planner`.
 
@@ -99,7 +103,8 @@ def simulate_day(
     depends on when it actually starts). If it finishes after its planned end, the planner is
     asked to replan from that moment. If it finishes early or on time the plan is kept and the
     next task waits for its planned start, unless `reclaim_early` is set: then an early finish
-    also triggers a replan from that moment, pulling the rest of the day forward.
+    also triggers a replan from that moment, pulling the rest of the day forward, provided it
+    freed at least `reclaim_min_gain` minutes (smaller gains are not worth disturbing the plan).
     """
     schedule = planner.initial(day)
     if observer:
@@ -120,7 +125,7 @@ def simulate_day(
                 observer.on_plan("overrun", schedule)
         else:
             schedule = complete(schedule, nxt.task_id, nxt.start, end)
-            if reclaim_early and end < nxt.end and schedule.placements:
+            if reclaim_early and nxt.end - end >= max(1, reclaim_min_gain) and schedule.placements:
                 before = schedule
                 schedule = planner.replan(schedule, end, None)
                 moved = _moved(before, schedule)

@@ -81,6 +81,7 @@ def evaluate_user(
     models: dict[str, Estimator],
     estimators: list[str] = ESTIMATORS,
     reclaim_early: bool = False,
+    reclaim_min_gain: int = 0,
 ) -> list[dict[str, Any]]:
     """Run every estimator over one user's evaluation-period days. Returns one row per (day, estimator)."""
     days = generate_timeline(user, cfg.n_days, cfg.seed)
@@ -95,7 +96,9 @@ def evaluate_user(
                 planner = EstimatorPlanner(OracleEstimator(day), day_features, refine_iters=4)
             else:
                 planner = EstimatorPlanner(models[name], day_features)
-            outcome = simulate_day(day, planner, reclaim_early=reclaim_early)
+            outcome = simulate_day(
+                day, planner, reclaim_early=reclaim_early, reclaim_min_gain=reclaim_min_gain
+            )
             rows.append({"user_id": user.user_id, "day": day.index, "estimator": name, **outcome.as_row()})
     return rows
 
@@ -108,10 +111,18 @@ def _init_worker(
     cfg: DataConfig,
     users: dict[int, UserProfile],
     reclaim_early: bool,
+    reclaim_min_gain: int,
     estimators: list[str],
 ) -> None:
     threadpool_limits(1)  # tiny predict() calls: OpenMP threading only adds overhead
-    _STATE.update(models=models, cfg=cfg, users=users, reclaim_early=reclaim_early, estimators=estimators)
+    _STATE.update(
+        models=models,
+        cfg=cfg,
+        users=users,
+        reclaim_early=reclaim_early,
+        reclaim_min_gain=reclaim_min_gain,
+        estimators=estimators,
+    )
 
 
 def _job(user_id: int) -> list[dict[str, Any]]:
@@ -121,6 +132,7 @@ def _job(user_id: int) -> list[dict[str, Any]]:
         _STATE["models"],
         _STATE["estimators"],
         reclaim_early=_STATE["reclaim_early"],
+        reclaim_min_gain=_STATE["reclaim_min_gain"],
     )
 
 
@@ -131,15 +143,18 @@ def run_simulations(
     workers: int,
     reclaim_early: bool = False,
     estimators: list[str] | None = None,
+    reclaim_min_gain: int = 0,
 ) -> pd.DataFrame:
     names = list(estimators or ESTIMATORS)
     users = {u.user_id: u for u in make_users(cfg)}
     if workers <= 1:
-        _init_worker(models, cfg, users, reclaim_early, names)
+        _init_worker(models, cfg, users, reclaim_early, reclaim_min_gain, names)
         results = [_job(u) for u in user_ids]
     else:
         with ProcessPoolExecutor(
-            workers, initializer=_init_worker, initargs=(models, cfg, users, reclaim_early, names)
+            workers,
+            initializer=_init_worker,
+            initargs=(models, cfg, users, reclaim_early, reclaim_min_gain, names),
         ) as pool:
             results = list(pool.map(_job, user_ids, chunksize=2))
     return pd.DataFrame([row for rows in results for row in rows])

@@ -17,6 +17,7 @@ from flowday.app.inputs import parse_events, parse_routines, parse_tasks, parse_
 from flowday.app.session import (
     APP_USER,
     ESTIMATOR_LABELS,
+    RECLAIM_MIN_GAIN,
     PlanningSession,
     compare_estimators,
     diff_schedules,
@@ -97,8 +98,8 @@ TASKS = [
 WINDOW = [(hhmm("09:00"), hhmm("18:00"))]
 
 
-def start(estimators, name="trust", log=None, history=None):
-    return PlanningSession.start(name, estimators[name], EVENTS, TASKS, WINDOW, history, log)
+def start(estimators, name="trust", log=None, history=None, **kwargs):
+    return PlanningSession.start(name, estimators[name], EVENTS, TASKS, WINDOW, history, log, **kwargs)
 
 
 def test_session_overrun_replans_and_explains(fitted):
@@ -382,6 +383,25 @@ def test_finishing_early_records_a_measured_duration_and_pulls_the_day_forward(f
     assert log.db.execute("SELECT measurement FROM completions").fetchall() == [("measured",)]
 
 
+def test_a_small_early_finish_keeps_the_plan_and_a_large_one_pulls_the_day_forward(fitted):
+    log = EventLog()
+    small = start(fitted, "trust", log)
+    before = {p.task_id: p.start for p in small.schedule.placements}
+    small.finish_early(RECLAIM_MIN_GAIN - 1)
+    after = {p.task_id: p.start for p in small.schedule.placements}
+    assert not small.replanned and all(after[t] == before[t] for t in after)
+    assert len(small.changes) == 1 and "stays as planned" in small.changes[0]
+    assert log.db.execute("SELECT trigger FROM plans").fetchall() == [("initial",)]  # measured, but no replan
+
+    big = start(fitted, "trust")
+    big.finish_early(RECLAIM_MIN_GAIN)
+    assert big.replanned and min(p.start for p in big.schedule.placements) >= big.now
+
+    eager = start(fitted, "trust", reclaim_min_gain=1)
+    eager.finish_early(RECLAIM_MIN_GAIN - 1)
+    assert eager.replanned
+
+
 def test_done_as_planned_is_assumed_but_overrun_and_early_are_measured(fitted):
     log = EventLog()
     s = start(fitted, "trust", log)
@@ -461,6 +481,16 @@ def test_app_finished_early_button_logs_a_measured_duration(app: AppTest, tmp_pa
             ("early",),
             ("initial",),
         }
+
+
+def test_sidebar_threshold_decides_whether_a_small_early_finish_replans(app: AppTest):
+    at = app.run()
+    assert at.sidebar.number_input(key="reclaim_gain").value == RECLAIM_MIN_GAIN
+    at.sidebar.number_input(key="reclaim_gain").set_value(1).run()
+    at.button(key="plan").click().run()
+    at.number_input(key="saved").set_value(5)
+    at.button(key="early").click().run()
+    assert not at.exception and at.session_state["session"].replanned
 
 
 def test_app_can_retrain_on_the_users_own_log(app: AppTest, tmp_path: Path):

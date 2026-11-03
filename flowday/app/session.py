@@ -27,6 +27,10 @@ from flowday.scheduler import (
 from flowday.simulator import generate_timeline, history_frame
 
 APP_USER = "app-demo"
+# An early finish pulls the rest of the day forward only if it frees at least this many minutes. Chosen at
+# the knee of the sweep in reports/sensitivity.md ("Reclaim threshold"): for the cautious planner it keeps
+# about 80% of the idle-time saving of reclaiming everything and halves the extra start-time churn.
+RECLAIM_MIN_GAIN = 10
 
 ESTIMATOR_LABELS = {
     "trust": "Trust my estimates (baseline)",
@@ -75,6 +79,8 @@ class PlanningSession:
     now: int
     observer: EventLogObserver | None = None
     changes: list[str] = field(default_factory=list)
+    replanned: bool = False  # did the last completion change the plan (as opposed to a note about keeping it)
+    reclaim_min_gain: int = RECLAIM_MIN_GAIN
 
     @classmethod
     def start(
@@ -86,6 +92,7 @@ class PlanningSession:
         windows: Sequence[Interval],
         history: Mapping[str, Mapping[str, float]] | None = None,
         log: EventLog | None = None,
+        reclaim_min_gain: int = RECLAIM_MIN_GAIN,
     ) -> PlanningSession:
         planner = EstimatorPlanner(estimator, task_features(tasks, history))
         schedule = planner.plan(events, tasks, windows)
@@ -95,7 +102,9 @@ class PlanningSession:
                 log, APP_USER, date.today().isoformat(), estimator_name, source="demo"
             )
             observer.on_plan("initial", schedule)
-        return cls(estimator_name, planner, schedule, schedule.now, observer)
+        return cls(
+            estimator_name, planner, schedule, schedule.now, observer, reclaim_min_gain=reclaim_min_gain
+        )
 
     def close(self) -> None:
         """Release the event-log connection, if any."""
@@ -126,16 +135,24 @@ class PlanningSession:
         end = p.start + actual_minutes
         before = self.schedule
         trigger = None
+        kept: list[str] = []
         if end > p.end:
             self.schedule = self.planner.replan(before, end, Overrun(p.task_id, end - p.end))
             trigger = "overrun"
         else:
             self.schedule = complete(before, p.task_id, p.start, end)
-            if end < p.end and self.schedule.placements:  # reclaim the time that was freed
+            freed = p.end - end
+            if freed >= max(1, self.reclaim_min_gain) and self.schedule.placements:  # reclaim the freed time
                 self.schedule = self.planner.replan(self.schedule, end, None)
                 trigger = "early"
+            elif freed > 0 and self.schedule.placements:
+                kept = [
+                    f"Finished {freed} min early, under the {self.reclaim_min_gain}-minute threshold, "
+                    "so the rest of the day stays as planned."
+                ]
         self.now = end
-        self.changes = self._explain(before, p, trigger)
+        self.changes = self._explain(before, p, trigger) or kept
+        self.replanned = trigger is not None
         if self.observer:
             self.observer.on_completion(p.task_id, p.start, end, p.end - p.start, measured)
             if trigger:

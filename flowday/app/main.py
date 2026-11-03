@@ -21,6 +21,7 @@ from flowday.app.inputs import DAY_NAMES, parse_events, parse_routines, parse_ta
 from flowday.app.session import (
     APP_USER,
     ESTIMATOR_LABELS,
+    RECLAIM_MIN_GAIN,
     PlanningSession,
     compare_estimators,
     log_history,
@@ -171,6 +172,7 @@ class Settings:
     persona: int | None
     log_on: bool
     log_frame: pd.DataFrame
+    reclaim_min_gain: int
 
 
 def _read_log_frame() -> pd.DataFrame:
@@ -257,9 +259,21 @@ def sidebar() -> Settings:
         ),
         key="persona",
     )
+    reclaim_min_gain = int(
+        st.sidebar.number_input(
+            "Pull the day forward when a task finishes at least this early (minutes)",
+            min_value=1,
+            max_value=60,
+            value=RECLAIM_MIN_GAIN,
+            step=5,
+            key="reclaim_gain",
+            help="A smaller early finish leaves the plan as it is. Lower means less idle time but more "
+            "start times that move (see 'Reclaim threshold' in reports/sensitivity.md).",
+        )
+    )
     log_on = st.sidebar.checkbox(f"Log plans and completions to {DB_PATH}", value=True, key="log_on")
     st.sidebar.caption("All demo data and the ML model are synthetic. Not evidence of real-world benefit.")
-    return Settings(estimators, cfg, name, start, end, weekday, persona, log_on, log_frame)
+    return Settings(estimators, cfg, name, start, end, weekday, persona, log_on, log_frame, reclaim_min_gain)
 
 
 def main() -> None:
@@ -358,7 +372,7 @@ def main() -> None:
                 previous.close()
             log = EventLog(DB_PATH) if cfg.log_on else None
             st.session_state["session"] = PlanningSession.start(
-                name, estimators[name], events, tasks, window, history, log
+                name, estimators[name], events, tasks, window, history, log, cfg.reclaim_min_gain
             )
 
         session: PlanningSession | None = st.session_state.get("session")
@@ -436,10 +450,10 @@ def show_session(session: PlanningSession) -> None:
             on_click=lambda: session.finish_early(int(st.session_state["saved"])),
         )
         st.caption(
-            "Ran over / finished early record the real duration and are used to learn. Early finishes pull the rest of the day forward."
+            "Ran over / finished early record the real duration and are used to learn. A big enough early finish pulls the rest of the day forward (see the threshold in the sidebar)."
         )
     if session.changes:
-        st.info("Replanned. " + "  \n".join(session.changes))
+        st.info(("Replanned. " if session.replanned else "") + "  \n".join(session.changes))
 
     if s.placements:
         st.dataframe(schedule_table(s), hide_index=True, width="stretch")

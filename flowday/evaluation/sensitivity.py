@@ -1,12 +1,14 @@
 """Sensitivity analyses: how much do the headline results depend on the choices behind them?
 
-    python -m flowday.evaluation.sensitivity [--workers N] [--only ablation,sweep,frontier]
+    python -m flowday.evaluation.sensitivity [--workers N] [--only ablation,sweep,frontier,reclaim]
 
 * ablation: retrain the GBM with features blanked out, to see which ones earn their keep.
 * sweep:    regenerate the synthetic world with different noise levels and bias strengths, and with
             different random seeds, retrain, and re-run the end-to-end evaluation each time.
 * frontier: end-to-end results as the planning quantile moves from the median to the 90th percentile,
             with and without reclaiming early finishes.
+* reclaim:  end-to-end results as the minimum gain needed to pull the day forward after an early finish
+            rises from 1 minute (reclaim everything) to 20, against never reclaiming.
 
 Everything is synthetic. These analyses probe the simulator's own assumptions; they cannot tell us
 anything about real users. Results go to `reports/sensitivity.json` and `reports/sensitivity.md`.
@@ -55,6 +57,9 @@ SWEEP: list[tuple[str, dict[str, Any]]] = [
     ("bias x1.5", {"bias_scale": 1.5}),
 ]
 FRONTIER = ["trust", "type_median", "gbm_q50", "gbm_q60", "gbm_q70", "gbm_q80", "gbm_q90", "oracle"]
+RECLAIM_THRESHOLDS = (1, 5, 10, 15, 20)  # minutes an early finish must free before the day is replanned
+RECLAIM_ESTIMATORS = ["trust", "gbm", "gbm_q80"]
+RECLAIM_METRICS = ["idle_minutes", "replan_churn", "pull_forwards", "tasks_completed", "deadlines_missed"]
 KEY_METRICS = [
     "deadlines_missed",
     "replans",
@@ -148,6 +153,18 @@ def frontier(workers: int) -> dict[str, Any]:
     return out
 
 
+def reclaim_threshold(workers: int) -> dict[str, Any]:
+    """Idle time versus disturbance as the minimum gain for reclaiming rises ("never" is the baseline)."""
+    bundle = joblib.load(ARTIFACT)
+    cfg: DataConfig = bundle["config"]
+    test = bundle["split"]["test"]
+    out: dict[str, Any] = {}
+    for label, reclaim, gain in [("never", False, 0), *((str(g), True, g) for g in RECLAIM_THRESHOLDS)]:
+        rows = run_simulations(bundle["estimators"], cfg, test, workers, reclaim, RECLAIM_ESTIMATORS, gain)
+        out[label] = summarize(rows)
+    return out
+
+
 def _mean(summary: dict[str, Any], name: str, metric: str) -> float:
     return float(summary[name][metric]["mean"])
 
@@ -219,13 +236,25 @@ def markdown(results: dict[str, Any]) -> str:
                     f"| {label} | " + " | ".join(_cell(summary[name][m]) for m in KEY_METRICS) + " |"
                 )
             parts.append("")
+    if "reclaim" in results:
+        heads = [m.replace("_", " ") for m in RECLAIM_METRICS]
+        for name in RECLAIM_ESTIMATORS:
+            parts += [f"### Reclaim threshold, {LABELS[name]} (per simulated day, 95% CI)", ""]
+            parts += ["| Reclaim if an early finish frees at least | " + " | ".join(heads) + " |"]
+            parts += ["|" + "---|" * (len(RECLAIM_METRICS) + 1)]
+            for label, summary in results["reclaim"].items():
+                shown = "never reclaim" if label == "never" else f"{label} min"
+                parts.append(
+                    f"| {shown} | " + " | ".join(_cell(summary[name][m]) for m in RECLAIM_METRICS) + " |"
+                )
+            parts.append("")
     return "\n".join(parts)
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
-    ap.add_argument("--only", default="ablation,sweep,frontier", help="comma-separated subset to run")
+    ap.add_argument("--only", default="ablation,sweep,frontier,reclaim", help="comma-separated subset to run")
     args = ap.parse_args()
     wanted = set(args.only.split(","))
     path = REPORT_DIR / "sensitivity.json"
@@ -237,6 +266,9 @@ def main() -> None:
     if "frontier" in wanted:
         print("frontier", flush=True)
         results["frontier"] = frontier(args.workers)
+    if "reclaim" in wanted:
+        print("reclaim", flush=True)
+        results["reclaim"] = reclaim_threshold(args.workers)
     if "sweep" in wanted:
         print("sweep", flush=True)
         results["sweep"] = sweep(args.workers)
