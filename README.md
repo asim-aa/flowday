@@ -139,8 +139,8 @@ latest changes, which left every earlier number untouched). One exception, discl
 probably because it ran while I was editing scheduler files. The committed file is the clean output, an
 independent recompute of that world matched it exactly, and a full rerun after the latest changes
 reproduced it again. Generated data (`data/`) and trained models (`artifacts/`) are git-ignored. CI (`.github/workflows/ci.yml`) runs `make check` on Python 3.11, 3.12 and
-3.13; I ran the same locally on all three for the previous commit, and the workflow passed on GitHub (Linux)
-for it.
+3.13; I ran the same locally on all three for an earlier commit, and the workflow has passed on GitHub (Linux)
+for the commits up to the README rewrite.
 
 ### Putting it online (free)
 
@@ -736,10 +736,10 @@ out; drop reasons showed internal task ids instead of titles).
   ML beats trusting the user on a small simulated population. Parallel and serial simulation are checked to
   give identical results.
 - `make check` runs `ruff`, **strict** `mypy` on the package, `mypy` on the tests (untyped test functions
-  allowed), and the tests. It is what CI runs on Python 3.11, 3.12 and 3.13. The latest changes pass it
-  (193 tests) in my development environment on 3.13; the commit before them also passed in fresh clones on
-  3.11 and 3.12 and on GitHub Actions (Linux, 3.11 to 3.13), and the latest ones have not yet been run on
-  those. The first 3.11 run had failed type-checking on two lines because of different numpy stubs; that is
+  allowed), and the tests. It is what CI runs on Python 3.11, 3.12 and 3.13. It passes (193 tests) in my
+  development environment on 3.13. On GitHub Actions (Linux, 3.11 to 3.13) it passed on the commits up to the
+  README rewrite; the hosted-mode, project-page and later commits have not been through it yet, and the
+  3.11 / 3.12 fresh-clone runs were done on an earlier commit. The first 3.11 run had failed type-checking on two lines because of different numpy stubs; that is
   fixed.
 - `make mutation` (see [above](#the-scheduler-algorithm-and-tradeoffs)) checks that the property tests fail
   when the scheduler is deliberately broken.
@@ -774,7 +774,7 @@ out; drop reasons showed internal task ids instead of titles).
   drift check on the model it is about to replace, but nothing acts on it: there is no scheduled retraining,
   no champion/challenger comparison, and the check has only ever seen synthetic drift.
 - Only developed and run on macOS (Apple silicon). The CI workflow (Linux, Python 3.11 to 3.13) has passed on
-  GitHub for the previous commit; Windows is untested.
+  GitHub for the commits up to the README rewrite; Windows is untested.
 
 **Next steps, in rough order of value**
 
