@@ -16,8 +16,13 @@ from .features import HISTORY_FEATURES
 
 
 class Estimator(Protocol):
-    name: str
-    uses_hour: bool  # does the prediction depend on when the task will run?
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def uses_hour(self) -> bool:
+        """Does the prediction depend on when the task will run?"""
+        ...
 
     def predict(self, df: pd.DataFrame) -> np.ndarray: ...
 

@@ -27,6 +27,14 @@ class Planner(Protocol):
     def replan(self, schedule: Schedule, now: int, overrun: Overrun) -> Schedule: ...
 
 
+class Observer(Protocol):
+    """Receives what happens during a simulated day (e.g. to write an event log)."""
+
+    def on_plan(self, trigger: str, schedule: Schedule) -> None: ...
+
+    def on_completion(self, task_id: str, start: int, end: int, planned_minutes: int) -> None: ...
+
+
 class TrustPlanner:
     """Plan with the user's own estimates (the baseline every estimator is compared to)."""
 
@@ -73,7 +81,7 @@ class DayOutcome:
         }
 
 
-def simulate_day(day: SyntheticDay, planner: Planner) -> DayOutcome:
+def simulate_day(day: SyntheticDay, planner: Planner, observer: Observer | None = None) -> DayOutcome:
     """Run `day` with `planner`.
 
     Tasks run back to back at their planned start. A task takes its true duration (which
@@ -82,13 +90,20 @@ def simulate_day(day: SyntheticDay, planner: Planner) -> DayOutcome:
     next task waits for its planned start (early finishes are not reclaimed).
     """
     schedule = planner.initial(day)
+    if observer:
+        observer.on_plan("initial", schedule)
     replans = 0
     while schedule.placements:
         nxt = min(schedule.placements, key=lambda p: p.start)
         end = nxt.start + day.true_minutes(nxt.task_id, nxt.start)
+        planned = nxt.end - nxt.start
+        if observer:
+            observer.on_completion(nxt.task_id, nxt.start, end, planned)
         if end > nxt.end:
             schedule = planner.replan(schedule, end, Overrun(nxt.task_id, end - nxt.end))
             replans += 1
+            if observer:
+                observer.on_plan("overrun", schedule)
         else:
             schedule = complete(schedule, nxt.task_id, nxt.start, end)
     return _outcome(day, schedule, replans)

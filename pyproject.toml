@@ -43,6 +43,7 @@ select = ["E", "F", "I", "B", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
 "flowday/evaluation/plots.py" = ["E501"]  # figure captions
+"flowday/app/main.py" = ["E501"]  # UI copy
 
 [tool.mypy]
 python_version = "3.11"

@@ -78,6 +78,19 @@ def fit_models(
     return models, tuning
 
 
+def quick_fit(cfg: DataConfig) -> dict[str, Estimator]:
+    """Fit the estimators on every user with default hyper-parameters (no tuning, no evaluation).
+    For demos that need a model fast; `run` is the real, evaluated pipeline."""
+    frame = build_dataset(cfg).frame
+    return {
+        "trust": TrustEstimate().fit(frame),
+        "global_multiplier": GlobalMultiplier().fit(frame),
+        "type_median": TypeMedianRatio().fit(frame),
+        "gbm": GBMEstimator(None, cfg.seed).fit(frame),
+        "gbm_q80": GBMEstimator(0.8, cfg.seed).fit(frame),
+    }
+
+
 def _slice_metrics(test: pd.DataFrame, models: dict[str, Estimator], oracle: np.ndarray) -> dict[str, Any]:
     y = test["actual"].to_numpy(dtype=float)
     users = test["user_id"].to_numpy()
