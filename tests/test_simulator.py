@@ -52,6 +52,13 @@ def test_users_vary_but_stay_in_documented_ranges():
     assert {u.rounding for u in users} == {5, 15}
 
 
+def test_offset_shift_moves_every_users_bias_and_nothing_else():
+    base, shifted = sample_users(50, 4), sample_users(50, 4, offset_shift=0.3)
+    assert [round(s.offset - b.offset, 9) for b, s in zip(base, shifted, strict=True)] == [0.3] * 50
+    assert [u.noise_sigma for u in base] == [u.noise_sigma for u in shifted]
+    assert [u.peak_hour for u in base] == [u.peak_hour for u in shifted]
+
+
 def test_days_are_well_formed():
     users = sample_users(20, 0)
     for u in users:

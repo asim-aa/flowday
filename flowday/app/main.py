@@ -249,6 +249,9 @@ def main() -> None:
                 )
 
         if st.button("Plan my day", type="primary", key="plan", disabled=not inputs_ok):
+            previous: PlanningSession | None = st.session_state.get("session")
+            if previous is not None:
+                previous.close()
             log = EventLog(DB_PATH) if cfg.log_on else None
             st.session_state["session"] = PlanningSession.start(
                 name, estimators[name], events, tasks, window, history, log

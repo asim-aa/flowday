@@ -92,6 +92,11 @@ class PlanningSession:
             observer.on_plan("initial", schedule)
         return cls(estimator_name, planner, schedule, schedule.now, observer)
 
+    def close(self) -> None:
+        """Release the event-log connection, if any."""
+        if self.observer:
+            self.observer.log.close()
+
     def next_task(self) -> Placement | None:
         return min(self.schedule.placements, key=lambda p: p.start, default=None)
 

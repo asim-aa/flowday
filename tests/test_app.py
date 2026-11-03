@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import joblib
@@ -122,6 +123,15 @@ def test_session_mark_done_advances_the_clock_and_clears_the_change_log(fitted):
     s.mark_done()
     assert s.now == first.end and s.changes == []
     assert [c.task_id for c in s.schedule.completed] == [first.task_id]
+
+
+def test_closing_a_session_releases_its_log(fitted):
+    log = EventLog()
+    s = start(fitted, "trust", log)
+    s.close()
+    with pytest.raises(sqlite3.ProgrammingError):
+        log.count("plans")
+    start(fitted).close()  # a session without a log closes quietly
 
 
 def test_session_refuses_to_act_with_nothing_left(fitted):

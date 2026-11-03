@@ -32,7 +32,10 @@ packages = ["flowday"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-filterwarnings = ["ignore::DeprecationWarning"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore:unclosed database:ResourceWarning",  # throwaway in-memory EventLogs in tests
+]
 
 [tool.ruff]
 line-length = 110

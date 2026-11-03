@@ -444,5 +444,33 @@
     "type_median_as_q50": {
       "coverage": 0.5307712234475612
     }
+  },
+  "distribution_shift": {
+    "offset_shift": 0.3,
+    "n_users": 100,
+    "cold_start_first_7_days": {
+      "mae": {
+        "trust": 44.48210877862596,
+        "global_multiplier": 35.549180979643765,
+        "type_median": 29.023702084872365,
+        "gbm": 19.46105173994215
+      },
+      "coverage": {
+        "gbm_q50": 0.35424618320610685,
+        "gbm_q80": 0.6820133587786259
+      }
+    },
+    "eval_period": {
+      "mae": {
+        "trust": 43.57057509771077,
+        "global_multiplier": 34.636422855015816,
+        "type_median": 28.186050683525156,
+        "gbm": 16.08051419326783
+      },
+      "coverage": {
+        "gbm_q50": 0.48447794528196536,
+        "gbm_q80": 0.7997766610831938
+      }
+    }
   }
 }

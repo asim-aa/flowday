@@ -218,4 +218,6 @@ def test_train_run_writes_artifacts_with_disjoint_user_splits(
     saved = json.loads((tmp_path / "reports" / "model_metrics.json").read_text())
     assert set(saved["mae_minutes"]) == {"all_days", "cold_start_first_7_days", "eval_period"}
     assert {"gbm_q50", "gbm_q80"} <= set(saved["quantile_calibration"])
+    assert set(saved["distribution_shift"]) >= {"cold_start_first_7_days", "eval_period", "offset_shift"}
+    assert "Shifted population" in (tmp_path / "reports" / "model_summary.md").read_text()
     assert set(pd.read_csv(tmp_path / "data" / "synthetic_history.csv")["source"]) == {"synthetic"}

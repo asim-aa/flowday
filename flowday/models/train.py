@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -164,6 +165,52 @@ def evaluate(ds: Dataset, models: dict[str, Estimator], test_users: list[int]) -
     }
 
 
+STRESS_SHIFT = (
+    0.30  # log-scale: shifted users take ~35% longer relative to their estimate than trained-on users
+)
+
+
+def stress_test(cfg: DataConfig, models: dict[str, Estimator]) -> dict[str, Any]:
+    """Score the trained models on a population that underestimates more than anything seen in
+    training (every user's log-bias shifted by STRESS_SHIFT). Nothing is retrained."""
+    ds = build_dataset(replace(cfg, n_users=100, seed=cfg.seed + 1000, offset_shift=STRESS_SHIFT))
+    out: dict[str, Any] = {"offset_shift": STRESS_SHIFT, "n_users": 100}
+    for label, rows in (
+        ("cold_start_first_7_days", ds.frame[ds.frame["day"] < 7]),
+        ("eval_period", ds.frame[ds.frame["day"] >= cfg.eval_start]),
+    ):
+        y = rows["actual"].to_numpy(dtype=float)
+        maes = {
+            n: mae(y, models[n].predict(rows)) for n in ("trust", "global_multiplier", "type_median", "gbm")
+        }
+        covs = {n: coverage(y, models[n].predict(rows)) for n in ("gbm_q50", "gbm_q80")}
+        out[label] = {"mae": maes, "coverage": covs}
+    return out
+
+
+def markdown_summary(metrics: dict[str, Any]) -> str:
+    names = ["trust", "global_multiplier", "type_median", "gbm", "gbm_q50", "gbm_q80", "oracle_median"]
+    slices = ("all_days", "cold_start_first_7_days", "eval_period")
+    lines = ["| Estimator | MAE, all test days | MAE, first 7 days | MAE, eval period |", "|---|---|---|---|"]
+    for n in names:
+        cells = []
+        for sl in slices:
+            e = metrics["mae_minutes"][sl][n]
+            cells.append(f"{e['mae']:.1f} [{e['ci95'][0]:.1f}, {e['ci95'][1]:.1f}]")
+        lines.append(f"| {n} | " + " | ".join(cells) + " |")
+    st = metrics["distribution_shift"]
+    lines += ["", f"Shifted population (log-bias {STRESS_SHIFT:+.2f}), models not retrained:", ""]
+    lines += ["| Slice | MAE trust | MAE type-median | MAE GBM | q50 coverage (0.50) | q80 coverage (0.80) |"]
+    lines += ["|---|---|---|---|---|---|"]
+    for sl in ("cold_start_first_7_days", "eval_period"):
+        e = st[sl]
+        lines.append(
+            f"| {sl} | {e['mae']['trust']:.1f} | {e['mae']['type_median']:.1f} | {e['mae']['gbm']:.1f} |"
+            f" {e['coverage']['gbm_q50']:.2f} | {e['coverage']['gbm_q80']:.2f} |"
+        )
+    return "\n".join(lines) + "\n"
+
+
 def run(
     cfg: DataConfig, out_dir: Path = ARTIFACT_DIR, report_dir: Path = REPORT_DIR, save_csv: bool = True
 ) -> dict[str, Any]:
@@ -184,6 +231,7 @@ def run(
         },
         "tuning": tuning,
         **evaluate(ds, models, split["test"]),
+        "distribution_shift": stress_test(cfg, models),
     }
     out_dir.mkdir(parents=True, exist_ok=True)
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -191,6 +239,7 @@ def run(
         {"estimators": models, "config": cfg, "split": split, "synthetic": True}, out_dir / "models.joblib"
     )
     (report_dir / "model_metrics.json").write_text(json.dumps(metrics, indent=2))
+    (report_dir / "model_summary.md").write_text(markdown_summary(metrics))
     if save_csv:
         DATA_DIR.mkdir(exist_ok=True)
         ds.frame.to_csv(DATA_DIR / "synthetic_history.csv", index=False)
@@ -218,6 +267,15 @@ def _print_summary(metrics: dict[str, Any]) -> None:
             print(f"  {name}: {line}")
 
 
+def _print_shift(metrics: dict[str, Any]) -> None:
+    print(f"\nDistribution shift (+{STRESS_SHIFT} log-bias, no retraining)")
+    for sl in ("cold_start_first_7_days", "eval_period"):
+        e = metrics["distribution_shift"][sl]
+        mae_s = "  ".join(f"{k} {v:.1f}" for k, v in e["mae"].items())
+        cov_s = "  ".join(f"{k} {v:.3f}" for k, v in e["coverage"].items())
+        print(f"  {sl}: MAE {mae_s}\n    coverage {cov_s}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--users", type=int, default=DataConfig.n_users)
@@ -226,6 +284,7 @@ def main() -> None:
     args = ap.parse_args()
     metrics = run(DataConfig(n_users=args.users, n_days=args.days, seed=args.seed))
     _print_summary(metrics)
+    _print_shift(metrics)
 
 
 if __name__ == "__main__":

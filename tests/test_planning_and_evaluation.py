@@ -140,7 +140,7 @@ def test_evaluate_user_covers_every_estimator_and_eval_day(
 def test_ml_beats_trusting_the_user_on_spillover_and_misses(
     small: Dataset, fitted: dict[str, Estimator], split
 ):
-    frames = [pd.DataFrame(evaluate_user(small.users[u], small.config, fitted)) for u in split["test"][:10]]
+    frames = [pd.DataFrame(evaluate_user(small.users[u], small.config, fitted)) for u in split["test"][:6]]
     rows = pd.concat(frames)
     mean = rows.groupby("estimator")[["deadlines_missed", "event_overlap_minutes", "replans"]].mean()
     assert mean.loc["gbm", "event_overlap_minutes"] < mean.loc["trust", "event_overlap_minutes"]

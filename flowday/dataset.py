@@ -16,6 +16,7 @@ class DataConfig:
     n_days: int = 90
     eval_days: int = 30  # the last `eval_days` of each timeline are the end-to-end evaluation period
     seed: int = 0
+    offset_shift: float = 0.0  # shifts every user's log-bias; non-zero only for stress tests
 
     @property
     def eval_start(self) -> int:
@@ -31,7 +32,7 @@ class Dataset:
 
 
 def build_dataset(cfg: DataConfig) -> Dataset:
-    users = {u.user_id: u for u in sample_users(cfg.n_users, cfg.seed)}
+    users = {u.user_id: u for u in sample_users(cfg.n_users, cfg.seed, offset_shift=cfg.offset_shift)}
     timelines = {uid: generate_timeline(u, cfg.n_days, cfg.seed) for uid, u in users.items()}
     frame = pd.concat([history_frame(days, cfg.seed) for days in timelines.values()], ignore_index=True)
     return Dataset(cfg, users, timelines, add_history_features(frame))

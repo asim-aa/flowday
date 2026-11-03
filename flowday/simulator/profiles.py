@@ -87,15 +87,18 @@ class UserProfile:
         return max(NOISE_FLOOR_MINUTES, round(estimate * math.exp(log_ratio)))
 
 
-def sample_users(n: int, seed: int, first_id: int = 0) -> list[UserProfile]:
-    """Draw `n` synthetic users deterministically from `seed`."""
+def sample_users(n: int, seed: int, first_id: int = 0, offset_shift: float = 0.0) -> list[UserProfile]:
+    """Draw `n` synthetic users deterministically from `seed`.
+
+    `offset_shift` adds a constant to every user's log-bias, to build populations that underestimate
+    more (or less) than the training population for distribution-shift tests."""
     rng = np.random.default_rng([seed, 0xF10D])
     users = []
     for i in range(n):
         users.append(
             UserProfile(
                 user_id=first_id + i,
-                offset=float(rng.normal(0.0, 0.15)),
+                offset=float(rng.normal(0.0, 0.15)) + offset_shift,
                 size_slope=float(np.clip(rng.normal(0.08, 0.04), 0.0, None)),
                 peak_hour=float(np.clip(rng.normal(11.0, 2.0), 8.0, 15.0)),
                 tod_scale=float(rng.lognormal(0.0, 0.3)),
