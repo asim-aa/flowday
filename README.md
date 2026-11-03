@@ -62,9 +62,12 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+.
 Timings are on a laptop that was also busy with other work; they vary a lot with load.
 
 Everything is seeded. Re-training and re-running the evaluation in a fresh clone reproduced the committed
-`reports/` byte for byte (checked with `git diff`). Generated data (`data/`) and trained models
+`reports/` byte for byte (checked with `git diff`). One exception, disclosed: in my first run of
+`make sensitivity`, one of its seven simulated worlds (base, seed 2) differed slightly from a clean rerun,
+probably because it ran while I was editing scheduler files. The committed file is the clean fresh-clone
+output, and an independent recompute of that world matched it exactly. Generated data (`data/`) and trained models
 (`artifacts/`) are git-ignored. CI (`.github/workflows/ci.yml`) runs `make check` on Python 3.11, 3.12 and
-3.13; I ran the same on 3.11, 3.12 and 3.13 locally, but the workflow itself has not run on GitHub yet.
+3.13; I ran the same locally on all three, but the workflow itself has not run on GitHub yet.
 
 ## How it fits together
 
@@ -215,12 +218,15 @@ random numbers).
   change their estimates *because* a planner exists. Here each user's parameters are frozen.
 - **Plans are followed perfectly.** No one skips a task, reorders, takes a call, or ignores the app.
 - **Tasks are independent and clean.** Real task types are messy free text, not eight clean labels.
-- **One seed, one population, one set of design choices.** Intervals reflect sampling noise over simulated
-  users, not uncertainty about the simulator itself.
+- **A narrow set of design choices.** The headline numbers come from one seed. The sensitivity runs below
+  vary the seed, the noise and the bias strength, and the direction of the results holds, but the model
+  family and the estimator set were not varied. Intervals reflect sampling noise over simulated users, not
+  uncertainty about the simulator itself.
 - **Calibration is in-distribution.** The stress test below shows how quickly that breaks.
 
 The first line of defence is the oracle and the noise floor, which stop me from reading too much into
-small gaps. The second is a **distribution-shift test**: score the already-trained models on a population
+small gaps. The second is a **distribution-shift test** (the third, a sweep over the simulator's own
+parameters, follows it): score the already-trained models on a population
 in which every user underestimates 0.30 more (on the log scale) than anyone in training, with no
 retraining.
 
@@ -243,7 +249,7 @@ slightly from the headline run):
 |---|---|---|---|---|
 | base, seed 0 | 1.24 | 23.3 / 15.1 / 11.3 | 0.19 → 0.05 → 0.02 | 11.8 → 2.5 |
 | base, seed 1 | 1.21 | 24.7 / 15.9 / 12.5 | 0.17 → 0.04 → 0.01 | 12.6 → 2.7 |
-| base, seed 2 | 1.24 | 24.1 / 15.2 / 12.4 | 0.19 → 0.05 → 0.01 | 12.2 → 2.5 |
+| base, seed 2 | 1.24 | 24.1 / 15.2 / 12.4 | 0.18 → 0.04 → 0.01 | 12.2 → 2.3 |
 | noise x0.5 | 1.23 | 21.0 / 11.5 / 5.9 | 0.17 → 0.02 → 0.01 | 10.4 → 0.6 |
 | noise x2 | 1.25 | 31.6 / 25.7 / 23.6 | 0.23 → 0.10 → 0.03 | 16.4 → 6.6 |
 | bias x0.5 | 1.12 | 14.0 / 11.8 / 9.2 | 0.12 → 0.05 → 0.02 | 5.5 → 1.8 |
@@ -535,9 +541,10 @@ out; drop reasons showed internal task ids instead of titles).
   ML beats trusting the user on a small simulated population. Parallel and serial simulation are checked to
   give identical results.
 - `make check` runs `ruff`, **strict** `mypy` on the package, `mypy` on the tests (untyped test functions
-  allowed), and the tests. It is what CI runs on Python 3.11, 3.12 and 3.13. Locally, 3.12 passed the suite
-  at an earlier commit and 3.11 passed it after fixing two typing differences; the final commit was
-  re-checked on 3.11, 3.12 and 3.13 (see the PR). The GitHub workflow itself has not been run yet.
+  allowed), and the tests. It is what CI runs on Python 3.11, 3.12 and 3.13. Locally it passes (181 tests) in
+  fresh clones of the final commit on Python 3.11 and 3.12 and in my development environment on 3.13. The
+  first 3.11 run had failed type-checking on two lines because of different numpy stubs; that is fixed. The
+  GitHub workflow itself has not been run yet.
 - `make mutation` (see [above](#the-scheduler-algorithm-and-tradeoffs)) checks that the property tests fail
   when the scheduler is deliberately broken.
 - Mistakes in my own work that the tests, the browser check or the sensitivity runs found, and that are fixed:
