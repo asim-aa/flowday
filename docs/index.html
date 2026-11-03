@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlowDay</title>
+<meta name="description" content="An ML-informed daily scheduler: a deterministic planner plus a learned duration estimator, evaluated end to end on synthetic data, with the limits stated up front.">
+<meta property="og:title" content="FlowDay">
+<meta property="og:description" content="Trusted estimates over-promise. A learned estimate behind a deterministic scheduler fixes much of it, on synthetic data, and the page says exactly what that does and does not show.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Crect x='6' y='8' width='13' height='4' rx='2' fill='white'/%3E%3Crect x='11' y='14' width='15' height='4' rx='2' fill='white' opacity='.8'/%3E%3Crect x='8' y='20' width='10' height='4' rx='2' fill='white' opacity='.6'/%3E%3C/svg%3E">
+<!-- Numbers on this page are copied by hand from README.md and reports/*.json. Change them together.
+     Figures are copied from reports/figures by `make site`. -->
+<style>
+  :root {
+    --bg: #fafaf8; --surface: #ffffff; --text: #1f1f1e; --muted: #5f5e5a; --border: #e4e2dc;
+    --accent: #2a78d6; --accent-ink: #ffffff; --warn-bg: #fff6e0; --warn-border: #e8c26a; --code-bg: #f1efe9;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #151514; --surface: #1d1d1b; --text: #ecebe6; --muted: #a3a29b; --border: #33332f;
+      --accent: #5a9ff0; --accent-ink: #0d1117; --warn-bg: #2a2412; --warn-border: #6b5a22; --code-bg: #24241f;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #151514; --surface: #1d1d1b; --text: #ecebe6; --muted: #a3a29b; --border: #33332f;
+    --accent: #5a9ff0; --accent-ink: #0d1117; --warn-bg: #2a2412; --warn-border: #6b5a22; --code-bg: #24241f;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { width: min(100% - 32px, 780px); margin: 0 auto; }
+  header { padding: 56px 0 8px; }
+  h1 { font-size: clamp(2.1rem, 6vw, 3rem); line-height: 1.1; margin: 0 0 12px; letter-spacing: -0.02em; }
+  h2 { font-size: 1.5rem; line-height: 1.25; margin: 56px 0 12px; letter-spacing: -0.01em; }
+  h3 { font-size: 1.1rem; margin: 28px 0 6px; }
+  p { margin: 0 0 16px; }
+  a { color: var(--accent); }
+  .lede { font-size: 1.2rem; color: var(--muted); margin-bottom: 20px; }
+  .links { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0 8px; }
+  .btn {
+    display: inline-block; padding: 9px 16px; border-radius: 8px; text-decoration: none; font-weight: 600;
+    border: 1px solid var(--accent); color: var(--accent); background: transparent;
+  }
+  .btn.primary { background: var(--accent); color: var(--accent-ink); }
+  .notice {
+    background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 10px;
+    padding: 14px 16px; margin: 24px 0; font-size: 0.97rem;
+  }
+  .notice strong { display: block; margin-bottom: 2px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 28px 0 8px; }
+  .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 16px; }
+  .tile .big { font-size: 1.55rem; font-weight: 700; line-height: 1.2; letter-spacing: -0.01em; }
+  .tile .what { color: var(--muted); font-size: 0.9rem; margin-top: 4px; }
+  ol.steps { padding-left: 0; list-style: none; counter-reset: s; margin: 20px 0; }
+  ol.steps li { counter-increment: s; position: relative; padding: 0 0 18px 44px; }
+  ol.steps li::before {
+    content: counter(s); position: absolute; left: 0; top: 2px; width: 28px; height: 28px; border-radius: 50%;
+    background: var(--accent); color: var(--accent-ink); font-weight: 700; font-size: 0.9rem;
+    display: grid; place-items: center;
+  }
+  ol.steps b { display: block; }
+  figure { margin: 24px 0; }
+  figure img, figure svg { max-width: 100%; height: auto; display: block; margin: 0 auto; }
+  figure.plot img { background: #fff; border: 1px solid var(--border); border-radius: 10px; }
+  figcaption { color: var(--muted); font-size: 0.9rem; margin-top: 8px; text-align: center; }
+  .diagram { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px; overflow-x: auto; }
+  .scroll { overflow-x: auto; margin: 16px 0 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 0.93rem; font-variant-numeric: tabular-nums; }
+  th, td { padding: 9px 12px; text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); }
+  tbody tr + tr td { border-top: 1px solid var(--border); }
+  tr.ml td { font-weight: 600; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; }
+  code { background: var(--code-bg); padding: 1px 6px; border-radius: 5px; }
+  pre { background: var(--code-bg); padding: 14px 16px; border-radius: 10px; overflow-x: auto; margin: 0 0 16px; }
+  pre code { background: none; padding: 0; }
+  ul { padding-left: 22px; margin: 0 0 16px; }
+  li { margin-bottom: 8px; }
+  footer { margin: 72px 0 48px; padding-top: 20px; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.92rem; }
+  noscript .notice { margin-top: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>FlowDay</h1>
+  <p class="lede">A daily planner that learns how long your tasks really take, and replans when one runs over.</p>
+  <div class="links">
+    <a class="btn primary" href="https://github.com/asim-aa/flowday">Code on GitHub</a>
+    <a class="btn" href="https://github.com/asim-aa/flowday#readme">Full write-up</a>
+    <a class="btn" href="#run-it">Run it</a>
+  </div>
+  <div class="notice" role="note">
+    <strong>Everything about people here is synthetic.</strong>
+    The users, histories and every number on this page come from a simulator I wrote. The results show how the
+    method behaves <em>when its assumptions hold</em>. They are not evidence that it would help real people.
+  </div>
+</header>
+
+<main>
+<section aria-labelledby="claim">
+  <h2 id="claim">The claim, and what it costs</h2>
+  <p>People plan from their own estimates, and those are biased low. A planner that believes them over-promises, and
+  the day turns into a chain of overruns. FlowDay puts a learned duration estimate in front of a deterministic scheduler.
+  In the simulator, per day, against trusting the user:</p>
+  <div class="tiles">
+    <div class="tile"><div class="big">0.17 → 0.05</div><div class="what">deadlines missed</div></div>
+    <div class="tile"><div class="big">11.2 → 2.6 min</div><div class="what">spilling into fixed events</div></div>
+    <div class="tile"><div class="big">11.7 vs 11.3 min</div><div class="what">model error vs the noise floor</div></div>
+    <div class="tile"><div class="big">5.28 → 5.07</div><div class="what">tasks completed: the price</div></div>
+  </div>
+  <p>The last tile is the honest one. Trusting the user completes the <em>most</em> tasks, by over-committing and then
+  spilling into meetings, working overtime and missing deadlines. ML planning drops about 0.2 more tasks a day up front,
+  with a reason, instead of failing them later. Whether that trade is right depends on what an overrun costs a person,
+  which this study cannot measure.</p>
+</section>
+
+<section aria-labelledby="idea">
+  <h2 id="idea">The idea in seven steps</h2>
+  <p>Each step is a question. The next step exists because the previous one answered it or exposed a weak spot.</p>
+  <figure><div class="diagram" id="fig-steps" role="img" aria-label="Flowchart of the seven steps, from the claim to the audit of my own work"></div></figure>
+  <ol class="steps">
+    <li><b>Is the claim even true?</b>People plan from biased estimates, so a planner that believes them should over-promise. Everything is measured against that baseline, "trust the user".</li>
+    <li><b>How do I make the comparison fair?</b>Split the system: a deterministic scheduler with no ML, tested hard, and a swappable estimator that only hands it minutes per task. Then the estimator is the only thing that changes between plans.</li>
+    <li><b>Where does data come from?</b>There is none that is real, so a documented bias model (task type, size, time of day, a personal offset, noise) generates labelled synthetic days. Every estimator sees the same days and the same hidden noise.</li>
+    <li><b>How much of the bias can be learned?</b>Three baselines, then gradient boosting with past-only history features, split by user. Against a noise floor of 11.3 minutes the model scores 11.7 and trusting the user 23.1. The per-type median (14.6) is a strong baseline.</li>
+    <li><b>Does a better number make a better day?</b>Run the scheduler inside the simulator, let tasks take their true duration, replan on overruns. Yes, at the cost above.</li>
+    <li><b>What did that expose?</b>Each weak spot became the next piece of work: idle time led to reclaiming early finishes; that moved about seven start times a day, which led to a minimum-gain threshold; quantiles that fail for new users led to a distribution-shift test; "I only varied my own parameters" led to heavy-tailed and drifting-habit worlds; changing habits led to a drift check.</li>
+    <li><b>Can I trust my own work?</b>I audited it. The validator had silently lost four checks and the baselines took a median on the wrong scale. Both are fixed and disclosed instead of quietly corrected.</li>
+  </ol>
+</section>
+
+<section aria-labelledby="how">
+  <h2 id="how">How it works</h2>
+  <p>The scheduler only ever sees a number of minutes per task. Swapping the estimator is therefore the whole experiment.</p>
+  <figure><div class="diagram" id="fig-loop" role="img" aria-label="Estimator feeds minutes per task to the scheduler, which makes a plan; the day happens, overruns trigger a replan, and measured durations go to an event log that retrains the estimator"></div></figure>
+  <ul>
+    <li><b>Scheduler.</b> Admits tasks in priority order, but only if everything admitted so far can still be sequenced with every deadline met (an exact search with a node budget). Anything else is dropped with a reason. Fixed events and finished work never move. It is checked against a brute-force oracle and by injecting nine bugs; eight are caught and the ninth is an equivalent mutant.</li>
+    <li><b>Estimators.</b> Trust the user, one global multiplier, a per-type median, and gradient boosting for the median and the 80th percentile. The planning percentile is a dial: higher means fewer overruns and more dropped tasks.</li>
+    <li><b>Evaluation.</b> Same synthetic days and hidden noise for every estimator, so differences are paired. Intervals come from resampling whole users, because one user's days are correlated.</li>
+  </ul>
+  <figure><div class="diagram" id="fig-eval" role="img" aria-label="Evaluation design: one synthetic day is planned by each estimator, lived with true durations, and scored on paired metrics"></div></figure>
+</section>
+
+<section aria-labelledby="evidence">
+  <h2 id="evidence">What the evidence shows</h2>
+  <p>Per simulated day, 100 unseen users over 30 days each, early finishes not reclaimed:</p>
+  <div class="scroll"><table>
+    <thead><tr><th>Estimator</th><th>Deadlines missed</th><th>Replans</th><th>Tasks dropped</th><th>Min spilling into events</th><th>Tasks completed</th></tr></thead>
+    <tbody>
+      <tr><td>Trust the user</td><td>0.17</td><td>3.54</td><td>0.77</td><td>11.2</td><td>5.28</td></tr>
+      <tr><td>Global multiplier</td><td>0.11</td><td>2.16</td><td>0.95</td><td>6.6</td><td>5.09</td></tr>
+      <tr><td>Per-type median</td><td>0.06</td><td>2.13</td><td>1.02</td><td>3.4</td><td>5.03</td></tr>
+      <tr class="ml"><td>ML (median)</td><td>0.05</td><td>2.39</td><td>0.98</td><td>2.6</td><td>5.07</td></tr>
+      <tr class="ml"><td>ML, cautious (80th pct)</td><td>0.02</td><td>0.84</td><td>1.25</td><td>0.9</td><td>4.80</td></tr>
+      <tr><td>Oracle (true durations)</td><td>0.00</td><td>0.02</td><td>0.91</td><td>0.0</td><td>5.14</td></tr>
+    </tbody>
+  </table></div>
+  <p style="color:var(--muted);font-size:0.9rem">Confidence intervals, paired differences and the reclaim-early variant are in the <a href="https://github.com/asim-aa/flowday#end-to-end-evaluation">full write-up</a>.</p>
+  <figure class="plot"><img src="figures/fig3_schedule_outcomes.png" alt="Bar charts of deadlines missed, replans, idle minutes, dropped tasks, minutes spilling into fixed events and tasks completed for each estimator" loading="lazy" width="1800" height="990"><figcaption>End-to-end results for each estimator, with 95% intervals.</figcaption></figure>
+  <ul>
+    <li><b>The per-type median is a strong baseline.</b> It is within noise of the model on missed deadlines. The model's clear edge is overtime and per-task accuracy.</li>
+    <li><b>There is no free point on the caution curve.</b> Each step up the planning percentile buys fewer misses and replans and costs more dropped tasks.</li>
+  </ul>
+  <figure class="plot"><img src="figures/fig4_caution_frontier.png" alt="Line charts of outcomes as the planning percentile rises from the 50th to the 90th" loading="lazy" width="1800" height="690"><figcaption>The price of caution: outcomes as the planning percentile rises, with and without reclaiming early finishes.</figcaption></figure>
+</section>
+
+<section aria-labelledby="limits">
+  <h2 id="limits">What this does not prove</h2>
+  <ul>
+    <li><b>The model was told the answer's shape.</b> The generator is log-linear in features the estimator is given. Recovering it shows the pipeline works, not that human durations are this learnable.</li>
+    <li><b>The biases are my assumptions</b>, loosely inspired by the planning-fallacy literature, not measured.</li>
+    <li><b>Calibration breaks under shift.</b> For brand-new users who underestimate more than anyone in training, the 80th-percentile coverage is 0.68 in their first week, and recovers only as history accumulates. Anchoring on the user's own history lifts it to just 0.72, because 14% of first-week tasks have no history at all. I tried it and did not adopt it.</li>
+    <li><b>Robustness is shown only for mild departures.</b> Seeds, noise and bias strength change the size of the gains, not their direction. Heavy-tailed noise and steadily drifting habits do not break it either, but both are still log-linear plus noise. Abrupt changes, interdependent tasks and a user who reacts to the planner were not tried.</li>
+    <li><b>One day at a time.</b> No experiment evaluates a multi-day horizon, and the scheduler has no task splitting or dependencies.</li>
+  </ul>
+</section>
+
+<section aria-labelledby="checked">
+  <h2 id="checked">How I checked my own work</h2>
+  <ul>
+    <li>193 tests with property-based checks against a brute-force oracle; strict type checking; about 95% line coverage; CI on Python 3.11 to 3.13.</li>
+    <li>Reports regenerate byte for byte from a fixed seed.</li>
+    <li>Mistakes the checks found are listed, not hidden: the validator that had silently lost four checks, a median taken on the wrong scale, a routine that could be planned a day early.</li>
+  </ul>
+</section>
+
+<section aria-labelledby="run-it">
+  <h2 id="run-it">Run it</h2>
+  <p>You need <a href="https://docs.astral.sh/uv/">uv</a> and Python 3.11 or newer.</p>
+<pre><code>git clone https://github.com/asim-aa/flowday
+cd flowday
+make install
+make train     # synthetic data, tuned models (1 to 3 min)
+make app       # the Streamlit planner</code></pre>
+  <p>Enter fixed events and tasks, plan the day, then press "ran over by N minutes" and watch the rest replan. Switch between
+  the baselines and the ML estimators, and slide how cautious the plan should be. Run locally, the app logs your real
+  durations and can retrain on them after 60 measured completions.</p>
+</section>
+</main>
+
+<footer>
+  <p>FlowDay is MIT licensed. Code, tests and the full write-up are on <a href="https://github.com/asim-aa/flowday">GitHub</a>.
+  No auth, hosted database, payments or LLM, by design.</p>
+</footer>
+</div>
+
+<noscript><div class="wrap"><div class="notice">The diagrams on this page need JavaScript. They are also in the <a href="https://github.com/asim-aa/flowday#the-idea-in-seven-steps">README</a>, where GitHub draws them.</div></div></noscript>
+
+<!-- Diagram sources: plain text, not parsed as HTML, so <br/> survives. -->
+<script type="text/x-mermaid" id="src-steps">
+flowchart TB
+    A["1 · Claim<br/>trusted estimates over-promise"] --> B["2 · Split the system<br/>deterministic scheduler<br/>+ swappable estimator"]
+    B --> C["3 · No real data<br/>labelled simulator,<br/>same days for every estimator"]
+    C --> D["4 · Learn durations<br/>3 baselines, then GBM<br/>point + quantiles"]
+    D --> E["5 · Test end to end<br/>scheduler inside the simulator,<br/>replan on overruns"]
+    E --> F["6 · Follow each weak spot<br/>idle time → reclaim → minimum gain<br/>new users → shift test<br/>own parameters → heavy tails, drift → drift check"]
+    F --> K["7 · Audit my own work<br/>bugs found, fixed and disclosed"]
+</script>
+<script type="text/x-mermaid" id="src-loop">
+flowchart TB
+    U["You<br/>tasks, your own estimates,<br/>fixed events, deadlines"]
+    H[("What your past tasks<br/>really took")]
+    E["Duration estimator (swappable)<br/>trust · multiplier · per-type median<br/>GBM q50 · GBM q80"]
+    S["Scheduler<br/>deterministic, no ML"]
+    P["Plan<br/>conflict-free; what does not fit<br/>is dropped with a reason"]
+    D(["The day happens"])
+    R["Replan<br/>fixed events and finished work never move"]
+    L[("Event log<br/>SQLite")]
+    U --> E
+    H --> E
+    E -->|"minutes per task"| S
+    S --> P
+    P --> D
+    D -->|"a task overruns<br/>or finishes early"| R
+    R --> P
+    D -->|"measured durations"| L
+    L -->|"retrain"| H
+</script>
+<script type="text/x-mermaid" id="src-eval">
+flowchart TB
+    G["Simulator: one synthetic day<br/>events, tasks, estimates,<br/>hidden noise drawn once per task"]
+    P1["Plan with<br/>trust"]
+    P2["Plan with<br/>per-type<br/>median"]
+    P3["Plan with<br/>GBM or<br/>GBM q80"]
+    P4["Plan with<br/>oracle (true<br/>durations)"]
+    X["Live the day: every task takes<br/>its TRUE duration<br/>overrun → replan<br/>early finish → optionally pull forward"]
+    M["Per-day metrics<br/>missed deadlines · replans · idle<br/>dropped · spill into events<br/>overtime · completed"]
+    C["Paired difference against trust,<br/>95% CI from resampling whole users"]
+    G --> P1 & P2 & P3 & P4
+    P1 & P2 & P3 & P4 --> X
+    X --> M --> C
+</script>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs";
+  const dark = matchMedia("(prefers-color-scheme: dark)").matches &&
+               document.documentElement.dataset.theme !== "light" || document.documentElement.dataset.theme === "dark";
+  mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default",
+                       flowchart: { useMaxWidth: true, htmlLabels: true } });
+  for (const [src, target] of [["src-steps", "fig-steps"], ["src-loop", "fig-loop"], ["src-eval", "fig-eval"]]) {
+    try {
+      const { svg } = await mermaid.render("m-" + target, document.getElementById(src).textContent.trim());
+      const el = document.getElementById(target);
+      el.innerHTML = svg;
+      // on a phone, wide diagrams scroll sideways inside their card instead of shrinking to unreadable text
+      const drawn = el.querySelector("svg");
+      drawn.style.minWidth = Math.min(drawn.viewBox.baseVal.width, 520) + "px";
+    } catch (e) {
+      document.getElementById(target).textContent = "The diagram could not be drawn here; it is in the README.";
+    }
+  }
+</script>
+</body>
+</html>

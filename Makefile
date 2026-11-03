@@ -1,4 +1,4 @@
-.PHONY: install test coverage mutation lint typecheck check train evaluate figures app all synth-log retrain-from-log sensitivity
+.PHONY: site install test coverage mutation lint typecheck check train evaluate figures app all synth-log retrain-from-log sensitivity
 
 install:
 	uv sync
@@ -48,5 +48,9 @@ synth-log:
 LOG ?= data/synthetic_log.db
 retrain-from-log:
 	uv run python -m flowday.models.retrain --db $(LOG)
+
+# refresh the figures used by the github.io page (docs/); the page's numbers are copied by hand from the README
+site:
+	cp reports/figures/fig3_schedule_outcomes.png reports/figures/fig4_caution_frontier.png docs/figures/
 
 all: train evaluate
