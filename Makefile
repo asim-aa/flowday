@@ -1,4 +1,4 @@
-.PHONY: install test lint typecheck check train evaluate figures app all
+.PHONY: install test coverage mutation lint typecheck check train evaluate figures app all
 
 install:
 	uv sync
@@ -6,11 +6,19 @@ install:
 test:
 	uv run pytest
 
+# line coverage of the package by the test suite
+coverage:
+	uv run pytest --cov=flowday --cov-report=term-missing:skip-covered
+
+# inject known bugs into the scheduler; every non-equivalent one must be caught by the tests
+mutation:
+	uv run python scripts/mutation_check.py
+
 lint:
 	uv run ruff check .
 
 typecheck:
-	uv run mypy flowday
+	uv run mypy flowday tests
 
 check: lint typecheck test
 

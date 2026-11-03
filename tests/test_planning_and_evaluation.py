@@ -142,13 +142,16 @@ def test_ml_beats_trusting_the_user_on_spillover_and_misses(
 ):
     frames = [pd.DataFrame(evaluate_user(small.users[u], small.config, fitted)) for u in split["test"][:6]]
     rows = pd.concat(frames)
-    mean = rows.groupby("estimator")[["deadlines_missed", "event_overlap_minutes", "replans"]].mean()
-    assert mean.loc["gbm", "event_overlap_minutes"] < mean.loc["trust", "event_overlap_minutes"]
-    assert mean.loc["gbm", "deadlines_missed"] < mean.loc["trust", "deadlines_missed"]
-    assert mean.loc["gbm_q80", "replans"] < mean.loc["gbm", "replans"] < mean.loc["trust", "replans"]
+    table = rows.groupby("estimator")[["deadlines_missed", "event_overlap_minutes", "replans"]].mean()
+    mean = {metric: {name: float(v) for name, v in table[metric].items()} for metric in table}
+    assert mean["event_overlap_minutes"]["gbm"] < mean["event_overlap_minutes"]["trust"]
+    assert mean["deadlines_missed"]["gbm"] < mean["deadlines_missed"]["trust"]
+    assert mean["replans"]["gbm_q80"] < mean["replans"]["gbm"] < mean["replans"]["trust"]
     # the oracle sizes tasks by iterating to a fixed point, which very rarely fails to converge
-    assert mean.loc["oracle", "deadlines_missed"] < 0.02
-    assert mean.loc["oracle", "deadlines_missed"] < mean.drop("oracle")["deadlines_missed"].min()
+    assert mean["deadlines_missed"]["oracle"] < 0.02
+    assert mean["deadlines_missed"]["oracle"] < min(
+        v for k, v in mean["deadlines_missed"].items() if k != "oracle"
+    )
 
 
 def test_summarize_means_and_paired_differences_by_hand():

@@ -19,7 +19,7 @@ from flowday.scheduler import (
     validate_schedule,
 )
 
-from .strategies import Scenario, scenarios
+from .strategies import Scenario, planted_scenarios, scenarios
 
 PROPS = settings(max_examples=200, deadline=None, suppress_health_check=[HealthCheck.too_slow])
 
@@ -61,6 +61,16 @@ def brute_force_feasible(sc: Scenario) -> bool:
         else:
             return True
     return not sc.tasks
+
+
+@PROPS
+@given(planted_scenarios())
+def test_a_planted_exact_packing_is_always_found(sc):
+    """Tasks that tile the free time exactly (so demand == capacity) can all be scheduled."""
+    s = run(sc)
+    assert validate_schedule(s) == []
+    assert not s.dropped and len(s.placements) == len(sc.tasks)
+    assert not s.search_truncated
 
 
 # --- scheduling invariants ------------------------------------------------------------------------

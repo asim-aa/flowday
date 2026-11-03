@@ -147,7 +147,7 @@ def test_simulate_day_metrics_match_a_manual_recount():
 
 def test_a_planner_with_perfect_durations_never_replans_or_misses():
     class Oracle(TrustPlanner):
-        def initial(self, day):  # type: ignore[no-untyped-def]
+        def initial(self, day):
             from dataclasses import replace
 
             from flowday.scheduler import build_schedule
@@ -157,10 +157,9 @@ def test_a_planner_with_perfect_durations_never_replans_or_misses():
             sized = list(day.tasks)
             for _ in range(8):
                 s = build_schedule(day.events, sized, day.windows)
+                starts = {p.task_id: p.start for p in s.placements}
                 new = [
-                    replace(t, planned_minutes=day.true_minutes(t.id, s.placement_of(t.id).start))
-                    if s.placement_of(t.id)
-                    else t
+                    replace(t, planned_minutes=day.true_minutes(t.id, starts[t.id])) if t.id in starts else t
                     for t in sized
                 ]
                 if new == sized:

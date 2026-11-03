@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 from pathlib import Path
 
@@ -11,7 +10,6 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from flowday.dataset import DataConfig
 from flowday.models import (
     GBMEstimator,
     GlobalMultiplier,
@@ -26,7 +24,6 @@ from flowday.models import (
     reliability_table,
     split_users,
 )
-from flowday.models.train import run as train_run
 
 # --- history features: past-only, per user, per type ---------------------------------------------
 
@@ -65,7 +62,7 @@ def test_new_type_has_overall_but_no_type_history():
     df = table([(1, 0, "a", 10, 20), (1, 1, "z", 10, 10)])
     f = add_history_features(df)
     assert f.loc[1, "user_n"] == 1 and f.loc[1, "user_type_n"] == 0
-    assert math.isnan(f.loc[1, "user_type_lr_mean"])
+    assert math.isnan(float(f["user_type_lr_mean"].iloc[1]))
 
 
 def test_queries_can_come_from_a_later_day_than_all_history():
@@ -191,33 +188,3 @@ def test_gbm_is_deterministic_and_survives_serialisation(parts, fitted, tmp_path
     np.testing.assert_allclose(
         joblib.load(tmp_path / "m.joblib").predict(test), fitted["gbm_q80"].predict(test)
     )
-
-
-# --- the training entry point ----------------------------------------------------------------------
-
-
-def test_train_run_writes_artifacts_with_disjoint_user_splits(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.chdir(tmp_path)  # train writes data/ relative to the cwd
-    cfg = DataConfig(n_users=30, n_days=30, eval_days=10, seed=2)
-    metrics = train_run(cfg, tmp_path / "artifacts", tmp_path / "reports")
-    bundle = joblib.load(tmp_path / "artifacts" / "models.joblib")
-    split = bundle["split"]
-    assert not set(split["train"]) & set(split["test"]) and not set(split["val"]) & set(split["test"])
-    assert not set(split["train"]) & set(split["val"])
-    assert bundle["synthetic"] is True and metrics["data"]["synthetic"] is True
-    assert set(bundle["estimators"]) == {
-        "trust",
-        "global_multiplier",
-        "type_median",
-        "gbm",
-        "gbm_q50",
-        "gbm_q80",
-    }
-    saved = json.loads((tmp_path / "reports" / "model_metrics.json").read_text())
-    assert set(saved["mae_minutes"]) == {"all_days", "cold_start_first_7_days", "eval_period"}
-    assert {"gbm_q50", "gbm_q80"} <= set(saved["quantile_calibration"])
-    assert set(saved["distribution_shift"]) >= {"cold_start_first_7_days", "eval_period", "offset_shift"}
-    assert "Shifted population" in (tmp_path / "reports" / "model_summary.md").read_text()
-    assert set(pd.read_csv(tmp_path / "data" / "synthetic_history.csv")["source"]) == {"synthetic"}

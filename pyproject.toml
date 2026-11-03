@@ -20,6 +20,7 @@ dev = [
     "mypy>=1.11",
     "ruff>=0.6",
     "pandas-stubs",
+    "pytest-cov>=7.1.0",
 ]
 
 [build-system]
@@ -53,6 +54,15 @@ python_version = "3.11"
 strict = true
 warn_unused_ignores = true
 plugins = []
+
+# tests are type-checked, but untyped test functions are fine
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_untyped_calls = false
+disallow_incomplete_defs = false
+disallow_any_generics = false
+check_untyped_defs = true
 
 [[tool.mypy.overrides]]
 module = ["sklearn.*", "matplotlib.*", "joblib.*", "streamlit.*", "threadpoolctl.*"]

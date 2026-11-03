@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from hypothesis import strategies as st
 
-from flowday.scheduler import MINUTES_PER_DAY, Event, Task, daily_windows
+from flowday.scheduler import MINUTES_PER_DAY, Event, Task, daily_windows, subtract_intervals
 from flowday.scheduler.timeutil import Interval
 
 
@@ -71,3 +71,38 @@ def scenarios(draw: st.DrawFn, max_tasks: int = 7) -> Scenario:
 
 
 assert MINUTES_PER_DAY == 1440
+
+
+@st.composite
+def planted_scenarios(draw: st.DrawFn, max_tasks: int = 7) -> Scenario:
+    """A scenario with a known feasible solution that uses *all* the free time exactly.
+
+    The free gaps (work windows minus events) are cut into pieces; each piece becomes a task whose
+    length is the piece and whose deadline is its planted end (often with no slack). Demand equals
+    capacity at the deadlines, so pruning rules that are off by one are exposed.
+    """
+    windows = draw(windows_strategy())
+    events = draw(events_strategy(windows))
+    free = subtract_intervals(windows, [e.interval for e in events])
+    pieces: list[tuple[int, int]] = []
+    for a, b in free:
+        if b - a >= 2 and draw(st.booleans()):
+            cut = draw(st.integers(a + 1, b - 1))
+            pieces += [(a, cut), (cut, b)]
+        else:
+            pieces.append((a, b))
+    pieces = pieces[:max_tasks]
+    tasks = []
+    for i, (a, b) in enumerate(pieces):
+        slack = draw(st.one_of(st.just(0), st.integers(0, 40)))
+        tasks.append(
+            Task(
+                id=f"t{i}",
+                type="x",
+                estimated_minutes=b - a,
+                deadline=b + slack if draw(st.booleans()) else None,
+                priority=draw(st.integers(1, 5)),
+            )
+        )
+    order = draw(st.permutations(tasks))
+    return Scenario(events=events, tasks=list(order), windows=windows)

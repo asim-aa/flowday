@@ -295,6 +295,19 @@ def validate_schedule(schedule: Schedule) -> list[str]:
     if sorted(everything) != sorted(tasks):
         problems.append("every task must be exactly one of placed, completed or dropped")
 
+    for p in schedule.placements:
+        task = tasks.get(p.task_id)
+        if task is None:
+            continue
+        if p.end - p.start != task.duration:
+            problems.append(f"{p.task_id}: placed length {p.end - p.start} != duration {task.duration}")
+        if task.deadline is not None and p.end > task.deadline:
+            problems.append(f"{p.task_id}: ends {p.end} after deadline {task.deadline}")
+        if p.start < schedule.now:
+            problems.append(f"{p.task_id}: starts before now")
+        if not any(a <= p.start and p.end <= b for a, b in schedule.windows):
+            problems.append(f"{p.task_id}: not inside a work window")
+
     # (kind, label, interval). Events may overlap each other (reported in event_conflicts) and
     # completed work may have hit an event (reality); anything else must be disjoint.
     items = [("planned", f"task {p.task_id}", p.interval) for p in schedule.placements]
