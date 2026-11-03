@@ -11,10 +11,12 @@ training set, so the gradient-boosted models use smaller, more conservative sett
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import joblib
+import numpy as np
 import pandas as pd
 
 from flowday.eventlog import EventLog
@@ -31,6 +33,9 @@ from flowday.models import (
 
 MIN_ROWS = 60  # fewer measured completions than this is not enough to fit anything useful
 MIN_USERS_FOR_USER_SPLIT = 10
+DRIFT_RECENT_DAYS = 14
+DRIFT_MIN_ROWS = 20  # per side: fewer recent or earlier completions than this and the check says nothing
+DRIFT_Z = 3.0  # |z| above this is flagged; about 1 stationary log in 400 trips it
 
 
 def _params(n_rows: int) -> dict[str, Any]:
@@ -86,6 +91,58 @@ def holdout_mae(history: pd.DataFrame, seed: int = 0) -> dict[str, float | str]:
     return out
 
 
+@dataclass(frozen=True)
+class DriftReport:
+    """Whether a model's recent errors differ from its earlier ones. `recent_bias` and `earlier_bias` are
+    mean log(actual / predicted): positive means tasks take longer than the model says."""
+
+    checked: bool
+    drifted: bool
+    recent_rows: int
+    earlier_rows: int
+    recent_bias: float
+    earlier_bias: float
+    z: float
+
+
+def drift_check(
+    history: pd.DataFrame,
+    model: Estimator,
+    recent_days: int = DRIFT_RECENT_DAYS,
+    z_threshold: float = DRIFT_Z,
+) -> DriftReport:
+    """Has `model` stopped fitting the most recent `recent_days` of `history` (one person's log)?
+
+    Compares the model's log-scale errors over the recent days with the earlier ones (Welch z on the
+    means). Habits that change show up as a shift in that bias; the history features adapt only slowly, so
+    a retrain is due when this fires. Say nothing (`checked=False`) when either side is too small. Meant
+    for one user's log at a time: drift in opposite directions across users would cancel in a pooled one.
+    """
+    frame = add_history_features(history)
+    resid = np.log(frame["actual"].to_numpy(dtype=float)) - np.log(model.predict(frame))
+    recent_mask = (frame["day"] > frame["day"].max() - recent_days).to_numpy()
+    recent, earlier = resid[recent_mask], resid[~recent_mask]
+    if min(len(recent), len(earlier)) < DRIFT_MIN_ROWS:
+        return DriftReport(False, False, len(recent), len(earlier), float("nan"), float("nan"), float("nan"))
+    se = np.sqrt(recent.var(ddof=1) / len(recent) + earlier.var(ddof=1) / len(earlier))
+    z = float((recent.mean() - earlier.mean()) / se)
+    return DriftReport(
+        True, abs(z) > z_threshold, len(recent), len(earlier), float(recent.mean()), float(earlier.mean()), z
+    )
+
+
+def _print_drift(history: pd.DataFrame, model: Estimator) -> None:
+    """Drift check of the model about to be replaced, per user (it is a per-person statistic)."""
+    reports = {u: drift_check(h, model) for u, h in history.groupby("user_id")}
+    checked = {u: r for u, r in reports.items() if r.checked}
+    flagged = {u: r for u, r in checked.items() if r.drifted}
+    print(f"Drift check of the existing model: {len(flagged)} of {len(checked)} users flagged", end="")
+    print(f" ({len(reports) - len(checked)} had too little recent or earlier data)")
+    for u, r in flagged.items():
+        print(f"  {u!s}: recent bias {r.recent_bias:+.2f} vs earlier {r.earlier_bias:+.2f} (z {r.z:+.1f})")
+    print()
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--db", type=Path, default=Path("data/flowday.db"))
@@ -95,6 +152,8 @@ def main() -> None:
     args = ap.parse_args()
     with EventLog(args.db) as log:
         history = log.history_frame(args.source)
+    if args.out.exists():
+        _print_drift(history, joblib.load(args.out)["estimators"]["gbm"])
     report = holdout_mae(history, args.seed)
     print(
         f"Held-out MAE in minutes ({report.pop('split')}; {int(report.pop('train_rows'))} train rows, "

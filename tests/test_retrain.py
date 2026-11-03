@@ -11,7 +11,7 @@ import pytest
 from flowday.eventlog import EventLog, EventLogObserver
 from flowday.eventlog.simulate import simulate_into_log
 from flowday.models import retrain
-from flowday.models.retrain import MIN_ROWS, fit_from_log, holdout_mae
+from flowday.models.retrain import DRIFT_RECENT_DAYS, MIN_ROWS, drift_check, fit_from_log, holdout_mae
 from flowday.scheduler import Task, build_schedule
 from flowday.simulator import TrustPlanner, generate_timeline, sample_users, simulate_day
 
@@ -104,3 +104,27 @@ def test_cli_writes_a_model_bundle_and_warns_about_synthetic_data(
     assert set(bundle["estimators"]) >= {"gbm", "type_median"} and bundle["trained_on"]["sources"] == [
         "synthetic"
     ]
+
+
+def test_drift_check_is_quiet_on_stationary_logs_and_fires_when_habits_change(many_user_log: EventLog):
+    history = many_user_log.history_frame()
+    model = fit_from_log(history)["gbm"]
+    per_user = dict(iter(history.groupby("user_id")))
+    reports = [drift_check(h, model) for h in per_user.values()]
+    assert all(r.checked for r in reports) and sum(r.drifted for r in reports) <= 2  # of 30; expect ~0
+
+    user = next(iter(per_user.values()))
+    recent = user["day"] > user["day"].max() - DRIFT_RECENT_DAYS
+    for factor, sign in ((1.6, 1), (0.6, -1)):  # tasks start taking much longer, or much less time
+        changed = user.assign(actual=user["actual"].where(~recent, user["actual"] * factor))
+        r = drift_check(changed, model)
+        assert r.drifted and sign * r.z > 3 and sign * (r.recent_bias - r.earlier_bias) > 0.3
+
+
+def test_drift_check_declines_to_judge_when_either_side_is_small(many_user_log: EventLog):
+    history = many_user_log.history_frame()
+    model = fit_from_log(history)["gbm"]
+    user = next(iter(dict(iter(history.groupby("user_id"))).values()))
+    first_days = user[user["day"] < user["day"].min() + 5]  # all of it falls inside the "recent" window
+    r = drift_check(first_days, model)
+    assert not r.checked and not r.drifted and r.earlier_rows == 0
