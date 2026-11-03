@@ -38,6 +38,9 @@ from flowday.simulator import TASK_TYPES
 
 ARTIFACT = Path(os.environ.get("FLOWDAY_ARTIFACT", "artifacts/models.joblib"))
 DB_PATH = Path(os.environ.get("FLOWDAY_DB", "data/flowday.db"))
+# A public demo: no event log (it is one file shared by every visitor), so nothing is stored on the server,
+# and the demo model trains itself on first load instead of needing `make train`.
+HOSTED = os.environ.get("FLOWDAY_HOSTED") == "1"
 ORIGIN = datetime(2026, 1, 5)  # arbitrary date; only the time of day matters
 KIND_COLORS = {
     "Fixed event": "#8a8985",
@@ -188,13 +191,16 @@ def sidebar() -> Settings:
     st.sidebar.header("Settings")
     estimators, cfg, demo_users = load_estimators()
     if estimators is None:
-        st.sidebar.warning("No trained model found. Run `make train`, or train a small demo model now.")
-        if st.sidebar.button("Train small demo model", key="quick_train"):
-            st.session_state["quick_models"] = quick_estimators()
-            st.rerun()
-        estimators = st.session_state.get("quick_models")
         cfg = DataConfig(n_users=150, n_days=60, eval_days=20, seed=0)
         demo_users = list(range(8))
+        if HOSTED:
+            estimators = quick_estimators()
+        else:
+            st.sidebar.warning("No trained model found. Run `make train`, or train a small demo model now.")
+            if st.sidebar.button("Train small demo model", key="quick_train"):
+                st.session_state["quick_models"] = quick_estimators()
+                st.rerun()
+            estimators = st.session_state.get("quick_models")
     assert cfg is not None
     start = _minutes(st.sidebar.time_input("Work day starts", time(9, 0), key="work_start"))
     end = _minutes(st.sidebar.time_input("Work day ends", time(18, 0), key="work_end"))
@@ -207,23 +213,29 @@ def sidebar() -> Settings:
         help="Decides which recurring routines apply to the day.",
     )
 
-    log_frame = _read_log_frame()
+    log_frame = pd.DataFrame() if HOSTED else _read_log_frame()
     estimators = (
         dict(estimators) if estimators else {"trust": TrustEstimate()}
     )  # no model yet: own estimates only
-    st.sidebar.subheader("Learn from my own log")
     n_logged = len(log_frame)
-    st.sidebar.caption(
-        f"{n_logged} measured completion(s) logged. 'Done as planned' is only assumed, so it does not count; "
-        "use 'ran over' / 'finished early' to record real durations."
-    )
-    if st.sidebar.button(
-        f"Retrain on my log (needs {MIN_ROWS})", key="retrain", disabled=n_logged < MIN_ROWS
-    ):
-        st.session_state["log_models"] = fit_from_log(log_frame)
-    for key, model in (st.session_state.get("log_models") or {}).items():
-        if key in ("gbm", "gbm_q80"):
-            estimators[f"mine_{key}"] = model
+    if HOSTED:
+        st.sidebar.caption(
+            "Hosted demo: nothing you enter is stored. Run FlowDay locally to keep your own log and "
+            "retrain the model on your real durations."
+        )
+    else:
+        st.sidebar.subheader("Learn from my own log")
+        st.sidebar.caption(
+            f"{n_logged} measured completion(s) logged. 'Done as planned' is only assumed, so it does not count; "
+            "use 'ran over' / 'finished early' to record real durations."
+        )
+        if st.sidebar.button(
+            f"Retrain on my log (needs {MIN_ROWS})", key="retrain", disabled=n_logged < MIN_ROWS
+        ):
+            st.session_state["log_models"] = fit_from_log(log_frame)
+        for key, model in (st.session_state.get("log_models") or {}).items():
+            if key in ("gbm", "gbm_q80"):
+                estimators[f"mine_{key}"] = model
     extra_quantiles = ("gbm_q60", "gbm_q70", "gbm_q90")  # reached through the caution slider, not the radio
     name = st.sidebar.radio(
         "Duration estimates",
@@ -271,7 +283,9 @@ def sidebar() -> Settings:
             "start times that move (see 'Reclaim threshold' in reports/sensitivity.md).",
         )
     )
-    log_on = st.sidebar.checkbox(f"Log plans and completions to {DB_PATH}", value=True, key="log_on")
+    log_on = not HOSTED and st.sidebar.checkbox(
+        f"Log plans and completions to {DB_PATH}", value=True, key="log_on"
+    )
     st.sidebar.caption("All demo data and the ML model are synthetic. Not evidence of real-world benefit.")
     return Settings(estimators, cfg, name, start, end, weekday, persona, log_on, log_frame, reclaim_min_gain)
 
@@ -404,7 +418,9 @@ def main() -> None:
                     st.altair_chart(gantt(schedules[pick]), width="stretch")
 
     with log_tab:
-        if not DB_PATH.exists():
+        if HOSTED:
+            st.info("The hosted demo keeps no event log. Run FlowDay locally to log your own days.")
+        elif not DB_PATH.exists():
             st.info("Nothing logged yet. Plan a day with logging enabled.")
         else:
             with EventLog(DB_PATH) as log:

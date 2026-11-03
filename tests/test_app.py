@@ -286,6 +286,29 @@ def test_app_without_a_trained_model_still_works_with_baseline_only(
     assert not at.exception and at.session_state["session"].estimator_name == "trust"
 
 
+def test_hosted_mode_trains_its_own_model_and_keeps_nothing_on_the_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fitted
+):
+    monkeypatch.setenv("FLOWDAY_HOSTED", "1")
+    monkeypatch.setenv("FLOWDAY_ARTIFACT", str(tmp_path / "missing.joblib"))
+    monkeypatch.setenv("FLOWDAY_DB", str(tmp_path / "flowday.db"))
+    monkeypatch.setattr("flowday.models.train.quick_fit", lambda cfg: fitted)  # skip the real training
+    st.cache_resource.clear()
+    at = AppTest.from_file(APP_SCRIPT, default_timeout=60).run()
+    assert not at.exception
+    assert ESTIMATOR_LABELS["gbm"] in at.sidebar.radio(key="estimator").options  # ML without any clicking
+    assert not any("No trained model" in w.value for w in at.sidebar.warning)
+    assert [b.key for b in at.sidebar.button] == [] and [c.key for c in at.sidebar.checkbox] == []
+    at.sidebar.radio(key="estimator").set_value("gbm")
+    at.button(key="plan").click().run()
+    at.button(key="overrun").click().run()
+    assert not at.exception
+    session = at.session_state["session"]
+    assert session.observer is None and session.schedule.completed
+    assert not (tmp_path / "flowday.db").exists()
+    assert any("keeps no event log" in i.value for i in at.info)
+
+
 def test_app_compare_tab_shows_every_estimator(app: AppTest):
     at = app.run()
     assert not at.exception
