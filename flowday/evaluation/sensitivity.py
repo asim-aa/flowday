@@ -1,12 +1,13 @@
 """Sensitivity analyses: how much do the headline results depend on the choices behind them?
 
-    python -m flowday.evaluation.sensitivity [--workers N] [--only ablation,sweep,frontier,reclaim]
+    python -m flowday.evaluation.sensitivity [--workers N] [--only ablation,sweep,frontier,reclaim,drift]
 
 * ablation: retrain the GBM with features blanked out, to see which ones earn their keep.
 * sweep:    regenerate the synthetic world with different noise levels and bias strengths, and with
             different random seeds, retrain, and re-run the end-to-end evaluation each time.
 * frontier: end-to-end results as the planning quantile moves from the median to the 90th percentile,
             with and without reclaiming early finishes.
+* drift:    how often `drift_check` fires on stable users versus users whose habits drift.
 * reclaim:  end-to-end results as the minimum gain needed to pull the day forward after an early finish
             rises from 1 minute (reclaim everything) to 20, against never reclaiming.
 
@@ -34,6 +35,7 @@ from flowday.models import (
     cluster_bootstrap_ci,
     split_users,
 )
+from flowday.models.retrain import drift_check
 from flowday.models.train import evaluate, fit_models
 
 ABLATIONS: dict[str, tuple[str, ...]] = {
@@ -46,6 +48,9 @@ ABLATIONS: dict[str, tuple[str, ...]] = {
     "estimate only": ("type_code", "hour", *HISTORY_FEATURES),
 }
 
+TAIL_DF = 4.0  # Student-t degrees of freedom: tasks occasionally take several times as long
+DRIFT_SD = 0.003  # sd across users of a habit's drift in log-bias per day: ~0.27 after 90 days
+RAW_COLUMNS = ["user_id", "day", "task_type", "estimate", "hour", "actual"]
 SWEEP_USERS = 250  # smaller than the headline run so seven full retrain-and-evaluate runs stay quick
 SWEEP: list[tuple[str, dict[str, Any]]] = [
     ("base, seed 0", {}),
@@ -55,6 +60,9 @@ SWEEP: list[tuple[str, dict[str, Any]]] = [
     ("noise x2", {"noise_scale": 2.0}),
     ("bias x0.5", {"bias_scale": 0.5}),
     ("bias x1.5", {"bias_scale": 1.5}),
+    # departures from the generator's form (the first seven worlds only change its parameters)
+    ("heavy-tailed noise", {"tail_df": TAIL_DF}),
+    ("drifting habits", {"drift_sd": DRIFT_SD}),
 ]
 FRONTIER = ["trust", "type_median", "gbm_q50", "gbm_q60", "gbm_q70", "gbm_q80", "gbm_q90", "oracle"]
 RECLAIM_THRESHOLDS = (1, 5, 10, 15, 20)  # minutes an early finish must free before the day is replanned
@@ -165,6 +173,36 @@ def reclaim_threshold(workers: int) -> dict[str, Any]:
     return out
 
 
+def drift_detection() -> dict[str, Any]:
+    """How many users `drift_check` flags after 90 days, for the trained point model, in a world like its
+    training data and in one where every user's habits drift. In the drifting world the flags are also
+    counted by how fast a user drifts (quarters of the users, slowest first)."""
+    bundle = joblib.load(ARTIFACT)
+    cfg: DataConfig = bundle["config"]
+    out: dict[str, Any] = {}
+    worlds: list[tuple[str, dict[str, Any]]] = [
+        ("stable habits", {}),
+        ("drifting habits", {"drift_sd": DRIFT_SD}),
+    ]
+    for label, world in worlds:
+        ds = build_dataset(replace(cfg, n_users=100, seed=cfg.seed + 2000, **world))
+        model = bundle["estimators"]["gbm"]
+        reports = {
+            uid: drift_check(ds.frame.loc[ds.frame["user_id"] == uid, RAW_COLUMNS], model) for uid in ds.users
+        }
+        out[label] = {
+            "users": len(reports),
+            "checked": sum(r.checked for r in reports.values()),
+            "flagged": sum(r.drifted for r in reports.values()),
+        }
+        if world:
+            slowest_first = sorted(reports, key=lambda uid: abs(ds.users[uid].drift_per_day))
+            out[label]["flagged_by_drift_rate_quarter"] = [
+                sum(reports[uid].drifted for uid in group) for group in np.array_split(slowest_first, 4)
+            ]
+    return out
+
+
 def _mean(summary: dict[str, Any], name: str, metric: str) -> float:
     return float(summary[name][metric]["mean"])
 
@@ -236,6 +274,17 @@ def markdown(results: dict[str, Any]) -> str:
                     f"| {label} | " + " | ".join(_cell(summary[name][m]) for m in KEY_METRICS) + " |"
                 )
             parts.append("")
+    if "drift" in results:
+        parts += ["### Drift check (after 90 days; trained point model; 14-day window, |z| > 3)", ""]
+        parts += ["| World | users | flagged |", "|---|---|---|"]
+        for label, e in results["drift"].items():
+            parts.append(f"| {label} | {e['checked']} | {e['flagged']} ({e['flagged'] / e['checked']:.0%}) |")
+        by_rate = results["drift"]["drifting habits"]["flagged_by_drift_rate_quarter"]
+        parts += [
+            "",
+            f"Flagged in the drifting world by drift rate, slowest quarter of users first: {by_rate}",
+            "",
+        ]
     if "reclaim" in results:
         heads = [m.replace("_", " ") for m in RECLAIM_METRICS]
         for name in RECLAIM_ESTIMATORS:
@@ -254,7 +303,9 @@ def markdown(results: dict[str, Any]) -> str:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
-    ap.add_argument("--only", default="ablation,sweep,frontier,reclaim", help="comma-separated subset to run")
+    ap.add_argument(
+        "--only", default="ablation,sweep,frontier,reclaim,drift", help="comma-separated subset to run"
+    )
     args = ap.parse_args()
     wanted = set(args.only.split(","))
     path = REPORT_DIR / "sensitivity.json"
@@ -269,6 +320,9 @@ def main() -> None:
     if "reclaim" in wanted:
         print("reclaim", flush=True)
         results["reclaim"] = reclaim_threshold(args.workers)
+    if "drift" in wanted:
+        print("drift", flush=True)
+        results["drift"] = drift_detection()
     if "sweep" in wanted:
         print("sweep", flush=True)
         results["sweep"] = sweep(args.workers)

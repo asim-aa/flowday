@@ -168,6 +168,23 @@ def test_frontier_runs_both_modes_over_every_planning_quantile(sens_inputs):
     assert result["reclaim"]["trust"]["pull_forwards"]["mean"] > 0.0
 
 
+def test_reclaim_threshold_trades_pull_forwards_for_idle_time(sens_inputs):
+    result = sens.reclaim_threshold(workers=1)
+    assert list(result) == ["never", *map(str, sens.RECLAIM_THRESHOLDS)]
+    for name in sens.RECLAIM_ESTIMATORS:
+        pulled = [result[k][name]["pull_forwards"]["mean"] for k in result]
+        assert pulled[0] == 0.0 and pulled[1] > pulled[-1] >= 0.0
+        assert result["1"][name]["idle_minutes"]["mean"] <= result["never"][name]["idle_minutes"]["mean"]
+
+
+def test_drift_detection_flags_drifting_users_far_more_often(sens_inputs, monkeypatch):
+    monkeypatch.setattr(sens, "DRIFT_SD", 0.03)  # strong enough to see in the tiny test world
+    result = sens.drift_detection()
+    stable, drifting = result["stable habits"], result["drifting habits"]
+    assert stable["checked"] > 50 and stable["flagged"] <= 0.15 * stable["checked"]
+    assert drifting["flagged"] > 3 * max(1, stable["flagged"])
+
+
 def test_run_variant_applies_the_generator_knobs_and_reports_everything():
     cfg = DataConfig(n_users=30, n_days=30, eval_days=10, seed=4, noise_scale=0.5, bias_scale=1.5)
     v = sens.run_variant(cfg, workers=1)
@@ -183,6 +200,8 @@ def test_markdown_and_figures_cover_all_sections(sens_inputs, tmp_path: Path):
         "ablation": sens.ablation(),
         "sweep": {"world": sens.run_variant(DataConfig(n_users=30, n_days=30, eval_days=10, seed=5), 1)},
         "frontier": sens.frontier(workers=1),
+        "reclaim": sens.reclaim_threshold(workers=1),
+        "drift": sens.drift_detection(),
     }
     text = sens.markdown(results)
     for heading in (
@@ -190,6 +209,8 @@ def test_markdown_and_figures_cover_all_sections(sens_inputs, tmp_path: Path):
         "Generator sweep",
         "Caution frontier, early finishes not reclaimed",
         "Caution frontier, early finishes reclaimed",
+        "Reclaim threshold, GBM q80",
+        "Drift check",
     ):
         assert heading in text
     assert "| full model |" in text and "| world |" in text

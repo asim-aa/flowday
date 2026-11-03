@@ -7,7 +7,7 @@ used to order a user's history.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 import pandas as pd
@@ -54,6 +54,12 @@ class SyntheticDay:
 
 def _round_to(value: float, step: int, floor: int, cap: int) -> int:
     return int(min(cap, max(floor, step * round(value / step))))
+
+
+def _draw_noise(rng: np.random.Generator, user: UserProfile) -> float:
+    if user.tail_df is None:
+        return float(rng.standard_normal())
+    return float(rng.standard_t(user.tail_df) / math.sqrt(user.tail_df / (user.tail_df - 2.0)))
 
 
 def _gen_events(rng: np.random.Generator, cfg: DayConfig, day_key: str) -> tuple[Event, ...]:
@@ -110,16 +116,25 @@ def generate_day(
                 priority=int(rng.choice([1, 2, 3, 4, 5], p=[0.15, 0.25, 0.30, 0.20, 0.10])),
             )
         )
-        noise[task_id] = float(rng.standard_normal())
+        noise[task_id] = _draw_noise(rng, user)
     return SyntheticDay(user, index, events, tuple(tasks), ((cfg.work_start, cfg.work_end),), noise)
 
 
 def generate_timeline(
     user: UserProfile, n_days: int, seed: int, cfg: DayConfig = DEFAULT_CONFIG
 ) -> list[SyntheticDay]:
-    """`n_days` consecutive synthetic days for one user; reproducible from (seed, user_id)."""
+    """`n_days` consecutive synthetic days for one user; reproducible from (seed, user_id). With
+    `user.drift_per_day` the user's bias on day d is `offset + drift_per_day * d`."""
     rng = np.random.default_rng([seed, user.user_id, 1])
-    return [generate_day(user, d, rng, cfg) for d in range(n_days)]
+    return [
+        generate_day(
+            replace(user, offset=user.offset + user.drift_per_day * d) if user.drift_per_day else user,
+            d,
+            rng,
+            cfg,
+        )
+        for d in range(n_days)
+    ]
 
 
 def history_frame(days: list[SyntheticDay], seed: int, cfg: DayConfig = DEFAULT_CONFIG) -> pd.DataFrame:

@@ -104,6 +104,11 @@ def test_cli_writes_a_model_bundle_and_warns_about_synthetic_data(
     assert set(bundle["estimators"]) >= {"gbm", "type_median"} and bundle["trained_on"]["sources"] == [
         "synthetic"
     ]
+    assert "Drift check" not in text  # nothing to check on the first run
+
+    retrain.main()  # a model is now in place: the next run checks it for drift before replacing it
+    again = capsys.readouterr().out
+    assert "Drift check of the existing model: " in again and " of 12 users flagged" in again
 
 
 def test_drift_check_is_quiet_on_stationary_logs_and_fires_when_habits_change(many_user_log: EventLog):

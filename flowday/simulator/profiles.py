@@ -15,6 +15,11 @@ Generative model (log scale, per task):
 
     tod(hour) = 0.5 * (1 - cos(2*pi*(hour - user.peak_hour) / 24))   0 at the user's peak, 1 twelve hours away
               + 0.35 * exp(-0.5 * ((hour - 14) / 1.2) ** 2)          post-lunch dip for everyone
+
+Two optional departures (off by default; used only to see how the method copes when the generator is not
+the one it was built around): `tail_df` draws z from a Student-t with that many degrees of freedom (scaled to
+unit variance) instead of a normal, so a few tasks blow up; `drift_per_day` makes user.offset change linearly
+with the day index, so habits change over time.
 """
 
 from __future__ import annotations
@@ -67,6 +72,8 @@ class UserProfile:
     noise_sigma: float  # log-scale noise
     rounding: int  # the user rounds estimates to multiples of this many minutes
     bias_scale: float = 1.0  # sensitivity knob: scales every systematic effect (type, size, time of day)
+    tail_df: float | None = None  # Student-t degrees of freedom for the noise (> 2); None means normal
+    drift_per_day: float = 0.0  # log-scale change in `offset` per day (see generate_timeline)
 
     def log_ratio_mean(self, task_type: str, estimate: float, hour: float) -> float:
         spec = TASK_TYPES[task_type]
@@ -98,14 +105,19 @@ def sample_users(
     offset_shift: float = 0.0,
     bias_scale: float = 1.0,
     noise_scale: float = 1.0,
+    drift_sd: float = 0.0,
+    tail_df: float | None = None,
 ) -> list[UserProfile]:
     """Draw `n` synthetic users deterministically from `seed`.
 
     Knobs for stress and sensitivity tests (all neutral at their defaults, which reproduce the
     committed results exactly): `offset_shift` adds a constant to every user's log-bias;
     `bias_scale` multiplies the systematic effects (type, size, time of day); `noise_scale`
-    multiplies each user's noise."""
+    multiplies each user's noise; `drift_sd` gives each user a habit that drifts at a personal rate
+    ~N(0, drift_sd) log-units per day (drawn from a separate stream, so the other draws are unchanged);
+    `tail_df` makes the noise heavy-tailed."""
     rng = np.random.default_rng([seed, 0xF10D])
+    drift_rng = np.random.default_rng([seed, 0xD21F])
     users = []
     for i in range(n):
         users.append(
@@ -118,6 +130,8 @@ def sample_users(
                 noise_sigma=float(np.clip(rng.lognormal(math.log(0.22), 0.25), 0.08, 0.5)) * noise_scale,
                 rounding=int(rng.choice([5, 15], p=[0.7, 0.3])),
                 bias_scale=bias_scale,
+                tail_df=tail_df,
+                drift_per_day=float(drift_rng.normal(0.0, drift_sd)) if drift_sd else 0.0,
             )
         )
     return users

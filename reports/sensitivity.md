@@ -21,6 +21,8 @@
 | noise x2 | 1.25 | 31.6 | 25.7 | 23.6 | 0.51 / 0.81 |
 | bias x0.5 | 1.12 | 14.0 | 11.8 | 9.2 | 0.51 / 0.82 |
 | bias x1.5 | 1.36 | 36.6 | 19.8 | 14.1 | 0.51 / 0.81 |
+| heavy-tailed noise | 1.23 | 23.7 | 14.9 | 10.8 | 0.50 / 0.81 |
+| drifting habits | 1.25 | 24.8 | 17.8 | 11.9 | 0.52 / 0.82 |
 
 Per simulated day (means):
 
@@ -33,6 +35,8 @@ Per simulated day (means):
 | noise x2 | 0.23 / 0.11 / 0.10 / 0.03 | 3.16 / 2.30 / 0.76 | 16.4 / 6.6 / 2.3 | 32 / 51 / 91 |
 | bias x0.5 | 0.12 / 0.06 / 0.05 / 0.02 | 3.17 / 2.33 / 0.79 | 5.5 / 1.8 / 0.7 | 32 / 40 / 67 |
 | bias x1.5 | 0.29 / 0.07 / 0.06 / 0.02 | 3.58 / 2.13 / 0.75 | 18.2 / 2.4 / 0.8 | 23 / 41 / 64 |
+| heavy-tailed noise | 0.18 / 0.06 / 0.04 / 0.01 | 3.51 / 2.28 / 0.84 | 11.0 / 2.2 / 0.9 | 26 / 38 / 58 |
+| drifting habits | 0.20 / 0.07 / 0.05 / 0.02 | 3.31 / 2.12 / 0.72 | 11.8 / 2.0 / 0.7 | 31 / 43 / 68 |
 
 ### Caution frontier, early finishes not reclaimed (per simulated day, 95% CI)
 
@@ -59,6 +63,15 @@ Per simulated day (means):
 | GBM q80 (ML, cautious) | 0.02 [0.01, 0.02] | 0.86 [0.79, 0.93] | 33.69 [32.40, 35.02] | 1.14 [1.07, 1.20] | 0.82 [0.54, 1.12] | 4.91 [4.84, 4.99] |
 | GBM q90 | 0.01 [0.00, 0.01] | 0.39 [0.35, 0.45] | 35.61 [34.27, 37.00] | 1.27 [1.19, 1.34] | 0.45 [0.27, 0.65] | 4.78 [4.71, 4.86] |
 | Oracle (true durations) | 0.00 [0.00, 0.00] | 0.01 [0.01, 0.02] | 28.38 [27.32, 29.50] | 0.90 [0.84, 0.96] | 0.02 [0.01, 0.03] | 5.14 [5.08, 5.21] |
+
+### Drift check (after 90 days; trained point model; 14-day window, |z| > 3)
+
+| World | users | flagged |
+|---|---|---|
+| stable habits | 100 | 2 (2%) |
+| drifting habits | 100 | 28 (28%) |
+
+Flagged in the drifting world by drift rate, slowest quarter of users first: [1, 1, 10, 16]
 
 ### Reclaim threshold, Trust estimate (per simulated day, 95% CI)
 

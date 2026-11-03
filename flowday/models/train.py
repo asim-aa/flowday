@@ -147,9 +147,9 @@ def evaluate(ds: Dataset, models: dict[str, Estimator], test_users: list[int]) -
     test = ds.frame[ds.frame["user_id"].isin(test_users)].reset_index(drop=True)
     oracle = np.array(
         [
-            ds.users[u].median_minutes(t, e, h)
-            for u, t, e, h in zip(
-                test["user_id"], test["task_type"], test["estimate"], test["hour"], strict=True
+            ds.timelines[u][d].user.median_minutes(t, e, h)  # the day's own profile: habits may drift
+            for u, d, t, e, h in zip(
+                test["user_id"], test["day"], test["task_type"], test["estimate"], test["hour"], strict=True
             )
         ]
     )

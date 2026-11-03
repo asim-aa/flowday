@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 
@@ -147,3 +149,35 @@ def test_dataset_config_carries_the_knobs_to_the_data():
     ratio = lambda f: float((f["actual"] / f["estimate"]).median())  # noqa: E731
     assert ratio(strong) > 1.15 and abs(ratio(none) - 1.0) < 0.08
     assert [u.bias_scale for u in make_users(DataConfig(bias_scale=0.7))][:3] == [0.7] * 3
+
+
+def test_misspecification_knobs_leave_everything_else_untouched():
+    base = sample_users(20, 4)
+    assert base == sample_users(20, 4, drift_sd=0.0, tail_df=None)
+    drifting = sample_users(20, 4, drift_sd=0.01)
+    assert any(u.drift_per_day != 0.0 for u in drifting)
+    assert [replace(u, drift_per_day=0.0) for u in drifting] == base  # only the drift rates differ
+    assert [replace(u, tail_df=None) for u in sample_users(20, 4, tail_df=4.0)] == base
+
+
+def test_drifting_users_change_their_bias_day_by_day_and_stationary_ones_do_not():
+    def profile(**kw):
+        return UserProfile(
+            0, size_slope=0.0, peak_hour=11.0, tod_scale=0.0, noise_sigma=0.0, rounding=5, **kw
+        )
+
+    days = generate_timeline(profile(offset=0.1, drift_per_day=0.01), 40, 1)
+    assert days[0].user.offset == 0.1 and abs(days[30].user.offset - 0.4) < 1e-12
+    shift = days[30].user.log_ratio_mean("email", 30, 11.0) - days[0].user.log_ratio_mean("email", 30, 11.0)
+    assert abs(shift - 0.3) < 1e-12
+    assert {d.user.offset for d in generate_timeline(profile(offset=0.1), 40, 1)} == {0.1}
+
+
+def test_heavy_tailed_noise_has_unit_variance_but_far_more_extreme_draws():
+    def draws(tail_df: float | None) -> np.ndarray:
+        users = sample_users(12, 8, tail_df=tail_df)
+        return np.array([z for u in users for d in generate_timeline(u, 40, 8) for z in d.noise.values()])
+
+    normal, heavy = draws(None), draws(4.0)
+    assert 0.9 < heavy.std() < 1.2 and abs(normal.std() - 1.0) < 0.05
+    assert (np.abs(heavy) > 3).mean() > 3 * (np.abs(normal) > 3).mean()

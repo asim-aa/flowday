@@ -20,6 +20,8 @@ class DataConfig:
     offset_shift: float = 0.0
     bias_scale: float = 1.0
     noise_scale: float = 1.0
+    drift_sd: float = 0.0  # per-user habit drift, log-units per day (sd across users)
+    tail_df: float | None = None  # heavy-tailed noise: Student-t degrees of freedom
 
     @property
     def eval_start(self) -> int:
@@ -42,6 +44,8 @@ def make_users(cfg: DataConfig) -> list[UserProfile]:
         offset_shift=cfg.offset_shift,
         bias_scale=cfg.bias_scale,
         noise_scale=cfg.noise_scale,
+        drift_sd=cfg.drift_sd,
+        tail_df=cfg.tail_df,
     )
 
 

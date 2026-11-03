@@ -35,7 +35,7 @@ MIN_ROWS = 60  # fewer measured completions than this is not enough to fit anyth
 MIN_USERS_FOR_USER_SPLIT = 10
 DRIFT_RECENT_DAYS = 14
 DRIFT_MIN_ROWS = 20  # per side: fewer recent or earlier completions than this and the check says nothing
-DRIFT_Z = 3.0  # |z| above this is flagged; about 1 stationary log in 400 trips it
+DRIFT_Z = 3.0  # |z| above this is flagged; 2 of 100 stable synthetic users trip it (make sensitivity)
 
 
 def _params(n_rows: int) -> dict[str, Any]:
