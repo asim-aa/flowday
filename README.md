@@ -142,6 +142,23 @@ reproduced it again. Generated data (`data/`) and trained models (`artifacts/`) 
 3.13; I ran the same locally on all three for the previous commit, and the workflow passed on GitHub (Linux)
 for it.
 
+### Putting it online (free)
+
+Two separate things, both optional:
+
+- **A project page on github.io.** `docs/index.html` is a static page (the argument, the diagrams, the results, the
+  limits). In the repository settings choose *Pages, deploy from a branch*, branch `main`, folder `/docs`. `make site`
+  refreshes its figures; the numbers in it are copied by hand from this README, so change them together.
+- **A live app on Streamlit Community Cloud.** GitHub Pages cannot run a Python server, so the app needs its own host.
+  At <https://share.streamlit.io> create an app from this repository with main file `flowday/app/main.py`, pick
+  Python 3.12 under *Advanced settings*, and add the secret `FLOWDAY_HOSTED = "1"` (Streamlit exposes root-level
+  secrets as environment variables). Hosted mode trains its small demo model itself on first load (about 13 s on a
+  laptop; slower on a shared host), keeps **no event log** (the log is one file that every visitor would otherwise
+  share), and hides the "learn from my own log" controls. `requirements.txt` is pinned from `uv.lock`
+  (`uv export --no-dev --no-hashes --no-emit-project`, plus a line that installs the package itself); regenerate it
+  when the dependencies change. I tested the app from that file in a clean Python 3.12 environment, not on
+  Streamlit Cloud itself.
+
 ## How it fits together
 
 ```
@@ -158,7 +175,9 @@ flowday/
   eventlog/     SQLite schema (v2, with migration), observer that logs plans, completions and durations,
                 and simulate.py to write synthetic days into a log
   app/          Streamlit app; pure logic lives in session.py / inputs.py so it is unit-tested
-scripts/        mutation_check.py: inject known bugs into the scheduler and check the tests notice
+scripts/        mutation_check.py: inject known bugs into the scheduler and check the tests notice;
+                anchor_experiment.py: an experiment that was tried and not adopted (see "Synthetic data")
+docs/           the static github.io project page (index.html + two figures)
 tests/          pytest + hypothesis
 reports/        committed results: JSON, markdown tables and figures
 ```
@@ -495,13 +514,13 @@ and schedule again (two passes).
 
 ```mermaid
 flowchart TB
-    G["Simulator: one synthetic day<br/>events, tasks, estimates, and hidden noise drawn once per task"]
+    G["Simulator: one synthetic day<br/>events, tasks, estimates,<br/>hidden noise drawn once per task"]
     P1["Plan with<br/>trust"]
-    P2["Plan with<br/>per-type median"]
-    P3["Plan with<br/>GBM / GBM q80"]
-    P4["Plan with oracle<br/>(true durations)"]
-    X["Live the day: every task takes its TRUE duration<br/>overrun → replan · early finish → optionally pull the day forward"]
-    M["Per-day metrics<br/>missed deadlines · replans · idle · dropped · spill into events · overtime · completed"]
+    P2["Plan with<br/>per-type<br/>median"]
+    P3["Plan with<br/>GBM or<br/>GBM q80"]
+    P4["Plan with<br/>oracle (true<br/>durations)"]
+    X["Live the day: every task takes<br/>its TRUE duration<br/>overrun → replan<br/>early finish → optionally pull forward"]
+    M["Per-day metrics<br/>missed deadlines · replans · idle<br/>dropped · spill into events<br/>overtime · completed"]
     C["Paired difference against trust,<br/>95% CI from resampling whole users"]
     G --> P1 & P2 & P3 & P4
     P1 & P2 & P3 & P4 --> X
@@ -710,7 +729,7 @@ out; drop reasons showed internal task ids instead of titles).
 
 ## Tests and quality
 
-- **192 tests** (about 95% line coverage of the package, measured with `make coverage`): unit,
+- **193 tests** (about 95% line coverage of the package, measured with `make coverage`): unit,
   hypothesis property-based (scheduler, replanning, feature leakage, whole days of clicks through the app
   session), headless Streamlit (including routines, early finishes, the caution slider and retraining on the
   user's own log), a real v1 to v2 database migration, the CLIs, the figures, and a mini end-to-end check that
@@ -718,7 +737,7 @@ out; drop reasons showed internal task ids instead of titles).
   give identical results.
 - `make check` runs `ruff`, **strict** `mypy` on the package, `mypy` on the tests (untyped test functions
   allowed), and the tests. It is what CI runs on Python 3.11, 3.12 and 3.13. The latest changes pass it
-  (192 tests) in my development environment on 3.13; the commit before them also passed in fresh clones on
+  (193 tests) in my development environment on 3.13; the commit before them also passed in fresh clones on
   3.11 and 3.12 and on GitHub Actions (Linux, 3.11 to 3.13), and the latest ones have not yet been run on
   those. The first 3.11 run had failed type-checking on two lines because of different numpy stubs; that is
   fixed.
