@@ -234,6 +234,30 @@ once the model has personal history to correct for (it sees each user's past act
 That is a feature of how this particular model uses history, and it is the kind of failure to expect from
 real data too.
 
+**Sensitivity to the simulator's own parameters.** `make sensitivity` regenerates the world with different
+random seeds, with the noise doubled or halved, and with the systematic biases scaled by 0.5 or 1.5,
+retraining and re-running the end-to-end evaluation each time (250 users per world, so the base row differs
+slightly from the headline run):
+
+| World | median actual/estimate | MAE trust / per-type / GBM | Deadlines missed: trust → GBM → q80 | Min spilling into events: trust → GBM |
+|---|---|---|---|---|
+| base, seed 0 | 1.24 | 23.3 / 15.1 / 11.3 | 0.19 → 0.05 → 0.02 | 11.8 → 2.5 |
+| base, seed 1 | 1.21 | 24.7 / 15.9 / 12.5 | 0.17 → 0.04 → 0.01 | 12.6 → 2.7 |
+| base, seed 2 | 1.24 | 24.1 / 15.2 / 12.4 | 0.19 → 0.05 → 0.01 | 12.2 → 2.5 |
+| noise x0.5 | 1.23 | 21.0 / 11.5 / 5.9 | 0.17 → 0.02 → 0.01 | 10.4 → 0.6 |
+| noise x2 | 1.25 | 31.6 / 25.7 / 23.6 | 0.23 → 0.10 → 0.03 | 16.4 → 6.6 |
+| bias x0.5 | 1.12 | 14.0 / 11.8 / 9.2 | 0.12 → 0.05 → 0.02 | 5.5 → 1.8 |
+| bias x1.5 | 1.36 | 36.6 / 19.8 / 14.1 | 0.29 → 0.06 → 0.02 | 18.2 → 2.4 |
+
+The direction of every result is the same in all seven worlds: the ML plan misses fewer deadlines and spills
+into fewer events than trusting the user, and the cautious plan misses fewer still. What moves is the size of
+the gain. Across three seeds the GBM's error varies by about a minute (11.3 to 12.5). The GBM's edge over the
+per-type median is largest when noise is low (5.9 vs 11.5) and shrinks to about two minutes when noise is
+doubled (23.6 vs 25.7), as expected when most of the variation is irreducible. Weaker biases (x0.5) make
+trusting the user less bad (0.12 missed deadlines a day vs 0.29 at x1.5) and leave less for the model to
+fix. This varies parameters the model structure already represents; it does not test a different *kind* of
+misspecification such as drifting habits or heavy-tailed durations.
+
 ## Duration models
 
 All models predict *actual minutes* from `(task type, user's estimate, start hour, user history)`.
@@ -289,13 +313,36 @@ medians: trusting the user covers only 30% of outcomes.
 
 ![Quantile calibration](reports/figures/fig2_quantile_calibration.png)
 
+The other planning percentiles used later are equally calibrated (share of test durations at or below the
+prediction: q50: 0.495 | q60: 0.600 | q70: 0.703 | q80: 0.806 | q90: 0.906).
+
+**Which features earn their keep?** Retraining the GBM with one feature group replaced by a constant
+(`make sensitivity`; same tuned settings, test users, paired CIs):
+
+| GBM variant | MAE, all test days | MAE, first 7 days | Change vs full model (all days, paired 95% CI) |
+|---|---|---|---|
+| full model | 11.8 [11.1, 12.6] | 12.6 [11.6, 13.6] |  |
+| no history features | 14.1 [13.2, 15.2] | 14.1 [13.1, 15.3] | +2.31 [+1.72, +2.97] |
+| no per-user history | 12.0 [11.2, 12.7] | 13.2 [12.3, 14.2] | +0.14 [+0.10, +0.17] |
+| no per-user-and-type history | 11.9 [11.1, 12.7] | 12.6 [11.7, 13.5] | +0.07 [+0.02, +0.12] |
+| no start hour | 12.2 [11.5, 13.1] | 13.0 [12.0, 13.9] | +0.41 [+0.29, +0.53] |
+| no task type | 12.0 [11.2, 12.8] | 13.5 [12.6, 14.4] | +0.15 [+0.12, +0.17] |
+| estimate only | 15.7 [14.8, 16.7] | 15.7 [14.6, 16.9] | +3.87 [+3.31, +4.49] |
+
+The two history groups substitute for each other (removing either alone barely matters; removing both costs
+2.3 minutes, 1.5 of them in a user's first week), so the history features are collectively the largest
+contributor, followed by the start hour. Task type matters little once history is available, because
+per-type history already encodes it. Using only the user's estimate (including its size effect) is worse
+than the per-type median baseline, so the gain is not coming from the estimate alone.
+
 ## End-to-end evaluation
 
 For each of the 100 test users and each of their 30 evaluation days (3,000 days), the scheduler plans the
 day with an estimator and the simulator lives it: tasks start at their planned time and take their *true*
 duration (which depends on the hour they start). **Whenever a task finishes later than planned, the day is
 replanned from that moment.** A task that finishes early is not rewarded: the next one waits for its
-planned start, so unused slack shows up as idle time. Six estimators are compared; "oracle" knows the true
+planned start, so unused slack shows up as idle time (the headline setting; reclaiming it is evaluated
+further down). Six estimators are compared; "oracle" knows the true
 durations and is an unattainable reference. Because durations depend on start time and start time depends
 on durations, hour-dependent estimators size tasks, schedule, re-size each task for the slot it landed in,
 and schedule again (two passes).
@@ -328,8 +375,8 @@ What this shows, and does not:
   for the median GBM, because roughly half of tasks exceed their median by construction. The cautious
   80th-percentile plan is what cuts replans (0.84 per day) and misses (0.02), at the cost of 24 more idle
   minutes per day than the median GBM plan (65 vs 41; 38 more than trusting the user, CI +36 to +40) and
-  0.27 more dropped tasks per day (1.25 vs 0.98). It trades reliability for slack, and the slack is not
-  reclaimed in this simulator, so this overstates the idle cost a real person would pay.
+  0.27 more dropped tasks per day (1.25 vs 0.98). In this headline setting that idle time is mostly an
+  artifact of not reclaiming early finishes; the next section removes it and measures what is left.
 - **The per-type median is a strong baseline.** It is within noise of the GBM on missed deadlines
   (0.06 vs 0.05), has slightly fewer replans (2.1 vs 2.4), and is far better than the global multiplier.
   The GBM's clearest edge is overtime (1.6 to 0.9, non-overlapping CIs); its edge on minutes spilling into
@@ -340,6 +387,71 @@ What this shows, and does not:
   This is an approximation in the reference, not in the scheduler.
 
 ![Schedule outcomes](reports/figures/fig3_schedule_outcomes.png)
+
+### Reclaiming early finishes
+
+The headline setting above never reclaims time: a task that finishes early leaves a gap until the next one is
+due. With `reclaim_early` (always on in the app) an early finish also triggers a replan from that moment,
+pulling the rest of the day forward. Same days, same estimators, same hidden noise:
+
+| Estimator | Deadlines missed | Replans | Idle min | Tasks dropped | Min spilling into events | Tasks completed |
+|---|---|---|---|---|---|---|
+| Trust estimate | 0.17 [0.15, 0.19] | 3.54 [3.37, 3.70] | 21.4 [20.4, 22.3] | 0.75 [0.70, 0.80] | 11.0 [9.8, 12.3] | 5.30 [5.24, 5.36] |
+| Global multiplier | 0.10 [0.09, 0.12] | 2.16 [2.00, 2.32] | 28.0 [26.9, 29.2] | 0.90 [0.85, 0.95] | 6.5 [5.6, 7.6] | 5.15 [5.09, 5.20] |
+| Per-type median | 0.05 [0.04, 0.07] | 2.13 [1.91, 2.34] | 30.1 [28.7, 31.5] | 0.95 [0.90, 1.00] | 3.3 [2.5, 4.1] | 5.09 [5.04, 5.15] |
+| GBM (ML) | 0.05 [0.04, 0.06] | 2.41 [2.35, 2.48] | 28.3 [27.2, 29.4] | 0.93 [0.86, 0.99] | 2.5 [2.1, 2.9] | 5.12 [5.05, 5.19] |
+| GBM q80 (ML, cautious) | 0.02 [0.01, 0.02] | 0.86 [0.79, 0.93] | 33.7 [32.4, 35.0] | 1.14 [1.07, 1.20] | 0.8 [0.5, 1.1] | 4.91 [4.84, 4.99] |
+| Oracle (true durations) | 0.00 [0.00, 0.00] | 0.01 [0.01, 0.02] | 28.4 [27.3, 29.5] | 0.90 [0.84, 0.96] | 0.0 [0.0, 0.0] | 5.14 [5.08, 5.21] |
+
+![Schedule outcomes with early finishes reclaimed](reports/figures/fig3b_schedule_outcomes_reclaim.png)
+
+Reclaiming removes most of the idle-time cost of being careful: the q80 plan's idle time falls from 65 to 34
+minutes a day, the median GBM's from 41 to 28. The oracle, which has perfect durations and so nothing to
+reclaim, sits at 28: that is the floor set by holes in the calendar the scheduler cannot fill. Misses,
+replans and spill-over are essentially unchanged (within the confidence intervals). What reclaiming costs is
+**stability**. This
+table counts, summed over a day's replans, how many not-yet-started tasks had their start time changed:
+
+| Estimator | Idle min, not reclaimed → reclaimed | Tasks moved by replans per day, not reclaimed → reclaimed | Tasks moved per overrun replan, not reclaimed |
+|---|---|---|---|
+| Trust estimate | 27.0 → 21.4 | 5.9 → 8.5 | 1.66 |
+| Global multiplier | 44.7 → 28.0 | 2.9 → 7.4 | 1.36 |
+| Per-type median | 49.8 → 30.1 | 2.8 → 7.0 | 1.32 |
+| GBM (ML) | 41.1 → 28.3 | 3.5 → 7.0 | 1.47 |
+| GBM q80 (ML, cautious) | 65.1 → 33.7 | 1.1 → 6.5 | 1.35 |
+| Oracle (true durations) | 28.6 → 28.4 | 0.0 → 0.0 | 0.84 |
+
+An overrun replan is local: it moves about 1.3 to 1.7 upcoming tasks. Reclaiming turns every early finish into
+a replan too, so a day now reshuffles about 7 start times, which a person might well find disruptive. The app
+reclaims by default, since an unused gap is rarely what someone wants, but it has no threshold yet; a
+minimum-gain rule is the obvious fix and is left as a next step. Trusting the user still completes the most tasks (5.30 per day vs 5.12 for the median GBM)
+for the reasons given above.
+
+### The price of caution
+
+The 80th percentile was one choice. `make sensitivity` re-runs the whole evaluation with the GBM planning at
+each of the 50th to 90th percentiles (each model tuned on validation users, each well calibrated: test
+coverage q50: 0.495 | q60: 0.600 | q70: 0.703 | q80: 0.806 | q90: 0.906):
+
+| Estimator | Missed | Replans | Dropped | Completed | Idle min (not reclaimed) | Idle min (reclaimed) |
+|---|---|---|---|---|---|---|
+| Trust estimate | 0.17 | 3.54 | 0.77 | 5.28 | 27.0 | 21.4 |
+| Per-type median | 0.06 | 2.13 | 1.02 | 5.03 | 49.8 | 30.1 |
+| GBM q50 | 0.05 | 2.39 | 0.97 | 5.07 | 40.9 | 27.7 |
+| GBM q60 | 0.04 | 1.86 | 1.04 | 5.00 | 47.3 | 30.1 |
+| GBM q70 | 0.03 | 1.32 | 1.12 | 4.92 | 55.0 | 31.6 |
+| GBM q80 | 0.02 | 0.84 | 1.25 | 4.80 | 65.1 | 33.7 |
+| GBM q90 | 0.01 | 0.39 | 1.44 | 4.61 | 80.7 | 35.6 |
+| Oracle | 0.00 | 0.02 | 0.91 | 5.14 | 28.6 | 28.4 |
+
+![The price of caution](reports/figures/fig4_caution_frontier.png)
+
+Each step up in planning percentile buys fewer misses, replans and spill-over and costs more dropped tasks
+(0.97 to 1.44 per day from q50 to q90) and fewer completed ones (5.07 to 4.61). The idle-time cost depends
+almost entirely on whether early finishes are reclaimed: 41 to 81 minutes without, 28 to 36 with. There is
+no free point on the curve, and the right one depends on what an overrun costs relative to a dropped task,
+which this simulation cannot say; that is why the app exposes it as a slider rather than choosing for the
+user.
 
 ## Event log
 
@@ -416,38 +528,58 @@ out; drop reasons showed internal task ids instead of titles).
 
 ## Tests and quality
 
-- **116 tests**: unit, hypothesis property-based (scheduler, replanning, feature leakage, whole days of
-  clicks through the app session), headless Streamlit, and a mini end-to-end check that ML beats trusting
-  the user on a small simulated population.
-- `make check` runs `ruff`, **strict** `mypy` on the package, and the tests.
-- Bugs the tests found in my own code while building this: baselines computed a median on the log scale
-  instead of the ratio scale (even counts differed); `INSERT OR IGNORE` hid constraint violations; the
-  stale-`args` button bug; and several of my own over-strong assertions (priority-greedy admission is not
-  monotone; the oracle is not exactly perfect), which I corrected rather than hid.
+- **181 tests** (about 95% line coverage of the package, measured with `make coverage`): unit,
+  hypothesis property-based (scheduler, replanning, feature leakage, whole days of clicks through the app
+  session), headless Streamlit (including routines, early finishes, the caution slider and retraining on the
+  user's own log), a real v1 to v2 database migration, the CLIs, the figures, and a mini end-to-end check that
+  ML beats trusting the user on a small simulated population. Parallel and serial simulation are checked to
+  give identical results.
+- `make check` runs `ruff`, **strict** `mypy` on the package, `mypy` on the tests (untyped test functions
+  allowed), and the tests. It is what CI runs on Python 3.11, 3.12 and 3.13. Locally, 3.12 passed the suite
+  at an earlier commit and 3.11 passed it after fixing two typing differences; the final commit was
+  re-checked on 3.11, 3.12 and 3.13 (see the PR). The GitHub workflow itself has not been run yet.
+- `make mutation` (see [above](#the-scheduler-algorithm-and-tradeoffs)) checks that the property tests fail
+  when the scheduler is deliberately broken.
+- Mistakes in my own work that the tests, the browser check or the sensitivity runs found, and that are fixed:
+  the validator that had silently lost four checks (see the correction above); tomorrow's routine being
+  plannable today (no release times); baselines taking a median on the log scale instead of the ratio scale;
+  `INSERT OR IGNORE` hiding constraint violations; Streamlit button `args` bound at render time; a leaked
+  SQLite connection per replan; `split_users` assuming integer ids while the log uses text ids; an ablation
+  that crashed scikit-learn's binning by blanking features to NaN; and several over-strong assertions of
+  mine (priority-greedy admission is not monotone; the oracle is not exactly perfect).
 
 ## Limitations and next steps
 
 **Limitations**
 
-- Synthetic only. See above; this is the dominant limitation.
-- Early finishes are not reclaimed (no "pull the next task forward"), which inflates idle time for
-  conservative estimators.
+- Synthetic only. See above; this is the dominant limitation. The sensitivity analyses vary the simulator's
+  own parameters; they cannot say anything about real people.
+- The scheduler is greedy on priority over an exact feasibility check, so it can drop more value than an
+  optimal selection; no solver comparison was done. No task splitting, dependencies, travel time or buffers.
+- Reclaiming early finishes (opt-in in the simulator, always on in the app) cuts idle time but reshuffles
+  many start times (see the churn numbers); there is no minimum-gain threshold or "freeze the next hour".
 - Non-preemptible tasks: an overrun cannot be split around a meeting; it collides instead.
-- One day of tasks is planned at a time in the simulator and app (the scheduler supports multi-day
-  windows and routines; the experiments do not exercise them).
-- The 80th-percentile estimator is trained to be calibrated, not to be optimal for the scheduler's
-  objective; there is no tuning of the quantile against the cost of an overrun versus a drop.
+- The evaluation and experiments plan one day at a time. The scheduler supports multi-day windows and
+  routines (tested, including through the estimator planner) and the app applies routines to the chosen
+  weekday, but no experiment here evaluates a multi-day horizon.
 - History features are not updated from simulated executions during an evaluation day (they come from
   pre-generated history), which keeps estimators comparable but is not how a deployed system would learn.
-- Greedy admission can drop more value than an optimal selection would; no solver comparison was done.
+- The 80th percentile is one point on a measured frontier; nothing here chooses a quantile from the real
+  cost of an overrun versus a drop, and the "how cautious?" slider leaves that to the user.
+- Retraining from a log is manual and its held-out check is rough on small logs; there is no drift
+  detection, scheduled retraining, or comparison against the model in use.
+- Only developed and run on macOS (Apple silicon). The CI workflow targets Linux but has not run on GitHub
+  yet; Windows is untested.
 
 **Next steps, in rough order of value**
 
-1. Run on real logged data (the event log is ready for it) before believing any number here; start by
-   checking whether the type ratios and the cold-start behaviour look anything like the simulator's.
-2. Reclaim early finishes (replan on any large deviation, not only overruns).
-3. Choose the planning quantile per task from the cost of an overrun (deadline, event collision) versus
-   a drop, rather than a global q50 or q80.
-4. Task splitting and dependencies; release times; user preferences for when to do which work.
+1. Run on real logged data (the event log, `retrain-from-log` and the measured-versus-assumed distinction are
+   ready for it) before believing any number here; start by checking whether the type ratios and the
+   cold-start behaviour look anything like the simulator's.
+2. Add a minimum-gain threshold to reclaiming (pull the day forward only when it saves enough) and measure
+   the churn it removes.
+3. Choose the planning quantile per task from the cost of an overrun (deadline, event collision) versus a
+   drop, rather than a global q50 or q80.
+4. Task splitting and dependencies; user preferences for when to do which work.
 5. Online learning and drift detection, since real habits change.
 6. Compare against an optimal solver (MILP / CP-SAT) on small instances to quantify the greedy gap.

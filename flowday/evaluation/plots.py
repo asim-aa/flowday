@@ -194,7 +194,11 @@ def fig_schedule_outcomes(results: dict[str, Any], out: Path, reclaim: bool = Fa
     fig.text(
         0.01,
         0.865,
-        "Idle minutes are unreclaimed slack: a cautious plan trades fewer overruns for more of it. The oracle is an unattainable reference.",
+        (
+            "Early finishes pull the rest of the day forward, so idle time is mostly gaps between events. The oracle is an unattainable reference."
+            if reclaim
+            else "Idle minutes are unreclaimed slack: a cautious plan trades fewer overruns for more of it. The oracle is an unattainable reference."
+        ),
         fontsize=9,
         color=INK_2,
     )
@@ -251,7 +255,13 @@ def fig_frontier(frontier: dict[str, Any], out: Path) -> None:
             if not dashed:
                 for n, x, y in zip(QUANTILE_NAMES, xs, ys, strict=True):
                     ax.annotate(
-                        n[-2:], (x, y), textcoords="offset points", xytext=(6, 6), fontsize=8, color=INK_2
+                        n[-2:],
+                        (x, y),
+                        textcoords="offset points",
+                        xytext=(7, 7),
+                        fontsize=8,
+                        color=INK_2,
+                        zorder=7,
                     )
         for name, marker in (("trust", "s"), ("type_median", "D"), ("oracle", "^")):
             ax.scatter(
@@ -266,7 +276,7 @@ def fig_frontier(frontier: dict[str, Any], out: Path) -> None:
             )
         ax.set_title(title, fontsize=10, color=INK, loc="left")
         ax.set_xlabel("Idle minutes per day", color=INK_2, fontsize=9)
-        ax.set_ylim(bottom=0)
+        ax.set_ylim(bottom=-0.05 * ax.get_ylim()[1])  # room for markers sitting at zero
     handles = [
         Line2D(
             [],
