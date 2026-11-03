@@ -38,7 +38,7 @@ from flowday.models.metrics import bias
 GRID = [
     {"learning_rate": lr, "max_leaf_nodes": leaves} for lr, leaves in itertools.product([0.05, 0.1], [8, 24])
 ]
-QUANTILES = (0.5, 0.8)
+QUANTILES = (0.5, 0.6, 0.7, 0.8, 0.9)  # 0.5 and 0.8 are the headline pair; the rest feed the caution frontier
 ARTIFACT_DIR = Path("artifacts")
 REPORT_DIR = Path("reports")
 DATA_DIR = Path("data")
@@ -88,7 +88,7 @@ def quick_fit(cfg: DataConfig) -> dict[str, Estimator]:
         "global_multiplier": GlobalMultiplier().fit(frame),
         "type_median": TypeMedianRatio().fit(frame),
         "gbm": GBMEstimator(None, cfg.seed).fit(frame),
-        "gbm_q80": GBMEstimator(0.8, cfg.seed).fit(frame),
+        **{f"gbm_q{q}": GBMEstimator(q / 100, cfg.seed).fit(frame) for q in (60, 70, 80, 90)},
     }
 
 

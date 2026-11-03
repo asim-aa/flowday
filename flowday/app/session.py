@@ -34,6 +34,9 @@ ESTIMATOR_LABELS = {
     "type_median": "Per-type median ratio (baseline)",
     "gbm": "ML: gradient boosting (median)",
     "gbm_q80": "ML: gradient boosting, cautious (80th percentile)",
+    "gbm_q60": "ML: gradient boosting, 60th percentile",
+    "gbm_q70": "ML: gradient boosting, 70th percentile",
+    "gbm_q90": "ML: gradient boosting, 90th percentile (very cautious)",
     "mine_gbm": "ML trained on my own log (median)",
     "mine_gbm_q80": "ML trained on my own log, cautious (80th percentile)",
 }

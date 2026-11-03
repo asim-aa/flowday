@@ -92,8 +92,12 @@ def load_estimators() -> tuple[dict[str, Estimator] | None, DataConfig | None, l
     if not ARTIFACT.exists():
         return None, None, []
     bundle = joblib.load(ARTIFACT)
-    names = ["trust", "global_multiplier", "type_median", "gbm", "gbm_q80"]
-    return {n: bundle["estimators"][n] for n in names}, bundle["config"], bundle["split"]["test"][:8]
+    names = ["trust", "global_multiplier", "type_median", "gbm", "gbm_q60", "gbm_q70", "gbm_q80", "gbm_q90"]
+    return (
+        {n: bundle["estimators"][n] for n in names if n in bundle["estimators"]},
+        bundle["config"],
+        bundle["split"]["test"][:8],
+    )
 
 
 @st.cache_resource(show_spinner="Training a small demo model on synthetic data (about 20 s)...")
@@ -218,14 +222,28 @@ def sidebar() -> Settings:
     for key, model in (st.session_state.get("log_models") or {}).items():
         if key in ("gbm", "gbm_q80"):
             estimators[f"mine_{key}"] = model
+    extra_quantiles = ("gbm_q60", "gbm_q70", "gbm_q90")  # reached through the caution slider, not the radio
     name = st.sidebar.radio(
         "Duration estimates",
-        list(estimators),
+        [k for k in estimators if k not in extra_quantiles],
         format_func=lambda k: ESTIMATOR_LABELS.get(k, k),
         key="estimator",
         help="How long the scheduler reserves for each task. Baselines use only your estimate; "
         "ML also uses task type, time of day and, for a persona, their history.",
     )
+    if name == "gbm_q80":
+        levels = [q for q in (60, 70, 80, 90) if f"gbm_q{q}" in estimators]
+        if len(levels) > 1:
+            q = st.sidebar.select_slider(
+                "How cautious?",
+                options=levels,
+                value=80,
+                key="caution",
+                format_func=lambda v: f"{v}th percentile",
+                help="Plan for a task to finish within its reserved time this often. Higher means fewer overruns "
+                "and replans but more idle time and more tasks that do not fit (see the caution frontier in the README).",
+            )
+            name = f"gbm_q{q}"
     persona_options: list[int | None] = [None, *demo_users, *([MY_LOG] if n_logged else [])]
     persona = st.sidebar.selectbox(
         "Who is the ML model planning for?",
@@ -329,7 +347,7 @@ def main() -> None:
             else:
                 history, (ratio, n) = persona_history(cfg.cfg, cfg.persona, tasks)
                 who = "From their history this user"
-            if name.endswith(("gbm", "gbm_q80")):
+            if name.startswith(("gbm", "mine_gbm")):
                 st.caption(
                     f"{who} typically take(s) **x{ratio:.2f}** their estimate (based on {n} logged tasks)."
                 )

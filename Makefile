@@ -1,4 +1,4 @@
-.PHONY: install test coverage mutation lint typecheck check train evaluate figures app all synth-log retrain-from-log
+.PHONY: install test coverage mutation lint typecheck check train evaluate figures app all synth-log retrain-from-log sensitivity
 
 install:
 	uv sync
@@ -29,6 +29,10 @@ train:
 # run the scheduler end to end in the simulator with every estimator; writes reports/ and figures
 evaluate:
 	uv run python -m flowday.evaluation.run
+
+# ablation, generator sweep + seeds, and the caution frontier (takes ~15 minutes; needs `make train`)
+sensitivity:
+	uv run python -m flowday.evaluation.sensitivity
 
 figures:
 	uv run python -m flowday.evaluation.plots

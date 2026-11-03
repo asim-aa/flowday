@@ -48,6 +48,7 @@ select = ["E", "F", "I", "B", "UP"]
 [tool.ruff.lint.per-file-ignores]
 "flowday/evaluation/plots.py" = ["E501"]  # figure captions
 "flowday/app/main.py" = ["E501"]  # UI copy
+"flowday/evaluation/sensitivity.py" = ["E501"]  # report tables
 "tests/*" = ["E501"]  # SQL and expected-value literals
 
 [tool.mypy]

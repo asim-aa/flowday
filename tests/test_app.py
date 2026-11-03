@@ -238,7 +238,7 @@ def test_persona_history_returns_features_for_every_task(split):
 
 @pytest.fixture
 def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fitted, split) -> AppTest:
-    keep = ["trust", "global_multiplier", "type_median", "gbm", "gbm_q80"]
+    keep = ["trust", "global_multiplier", "type_median", "gbm", "gbm_q60", "gbm_q70", "gbm_q80", "gbm_q90"]
     joblib.dump(
         {"estimators": {k: fitted[k] for k in keep}, "config": SMALL, "split": split},
         tmp_path / "models.joblib",
@@ -288,7 +288,7 @@ def test_app_without_a_trained_model_still_works_with_baseline_only(
 def test_app_compare_tab_shows_every_estimator(app: AppTest):
     at = app.run()
     assert not at.exception
-    assert len(at.selectbox(key="cmp_left").options) == 5
+    assert len(at.selectbox(key="cmp_left").options) == 8
     assert at.selectbox(key="cmp_left").value == "trust" and at.selectbox(key="cmp_right").value == "gbm"
 
 
@@ -492,3 +492,18 @@ def test_app_can_retrain_on_the_users_own_log(app: AppTest, tmp_path: Path):
 def test_retrain_button_is_disabled_without_enough_measured_history(app: AppTest):
     at = app.run()
     assert at.sidebar.button(key="retrain").disabled is True
+
+
+def test_the_caution_slider_picks_the_planning_percentile(app: AppTest):
+    at = app.run()
+    assert not at.sidebar.select_slider  # no slider until a cautious ML estimate is chosen
+    at.sidebar.radio(key="estimator").set_value("gbm_q80").run()
+    slider = at.sidebar.select_slider(key="caution")
+    assert slider.value == 80
+    assert slider.options == ["60th percentile", "70th percentile", "80th percentile", "90th percentile"]
+    slider.set_value(90).run()
+    at.button(key="plan").click().run()
+    assert not at.exception
+    assert at.session_state["session"].estimator_name == "gbm_q90"
+    # the extra percentiles are reached through the slider, not as separate radio options
+    assert len(at.sidebar.radio(key="estimator").options) == 5

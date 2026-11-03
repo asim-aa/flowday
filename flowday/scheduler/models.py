@@ -34,6 +34,8 @@ class Task:
 
     `estimated_minutes` is what the user said. `planned_minutes` is what the scheduler
     should reserve; an estimator layer fills it in, otherwise the user's estimate is used.
+    `release` is the earliest minute the task may start (None = any time); recurring routines
+    use it so that one day's instance is never planned on an earlier day.
     """
 
     id: str
@@ -43,6 +45,7 @@ class Task:
     priority: int = 3
     planned_minutes: int | None = None
     title: str = ""
+    release: int | None = None
 
     def __post_init__(self) -> None:
         if self.estimated_minutes <= 0:

@@ -37,9 +37,17 @@ class _BudgetExceeded(Exception):
     pass
 
 
-def earliest_fit(free: Sequence[Interval], after: int, duration: int, deadline: int | None) -> int | None:
-    """Earliest start >= `after` such that [start, start+duration) lies in one free interval
-    and ends by `deadline`; None if there is no such start."""
+def earliest_fit(
+    free: Sequence[Interval],
+    after: int,
+    duration: int,
+    deadline: int | None,
+    release: int | None = None,
+) -> int | None:
+    """Earliest start >= `after` (and >= `release`) such that [start, start+duration) lies in one
+    free interval and ends by `deadline`; None if there is no such start."""
+    if release is not None:
+        after = max(after, release)
     limit = _INF if deadline is None else deadline
     for a, b in free:
         start = max(a, after)
@@ -67,6 +75,7 @@ def _sequence(
     n = len(order)
     dur = [t.duration for t in order]
     dl = [t.deadline for t in order]
+    rl = [t.release for t in order]
     full = (1 << n) - 1
     failed: set[tuple[int, int]] = set()
     nodes = 0
@@ -76,7 +85,7 @@ def _sequence(
         """Cheap necessary conditions on the tasks still to place."""
         remaining = [i for i in range(n) if not mask >> i & 1]
         for i in remaining:
-            if earliest_fit(free, t, dur[i], dl[i]) is None:
+            if earliest_fit(free, t, dur[i], dl[i], rl[i]) is None:
                 return False
         demand = 0
         for i in remaining:  # `order` is sorted by deadline, so demand accumulates in deadline order
@@ -96,10 +105,13 @@ def _sequence(
         if nodes > budget:
             raise _BudgetExceeded
         if viable(mask, t):
-            for i in range(n):
+            # Try tasks that can start now before tasks that must wait for their release time, so a
+            # task released later does not leave idle time that another task could have used. Tasks
+            # without a release time keep their deadline/priority order exactly.
+            for i in sorted(range(n), key=lambda j: (max(t, rl[j] or 0), j)):
                 if mask >> i & 1:
                     continue
-                start = earliest_fit(free, t, dur[i], dl[i])
+                start = earliest_fit(free, t, dur[i], dl[i], rl[i])
                 if start is None:
                     continue
                 chosen.append(Placement(order[i].id, start, start + dur[i]))
@@ -139,13 +151,13 @@ def _plan(
     truncated = False
 
     for task in sorted(tasks, key=lambda t: (-t.priority, _dl(t), t.duration, t.id)):
-        if earliest_fit(free, now, task.duration, task.deadline) is None:
+        if earliest_fit(free, now, task.duration, task.deadline, task.release) is None:
             dropped.append(Dropped(task.id, DropReason.NO_FIT_ALONE, _no_fit_detail(task, free, now)))
             continue
         result, over = _sequence([*admitted, task], free, now, budget)
         truncated = truncated or over
         if result is None:
-            rivals = sorted(a.id for a in admitted if _dl(a) <= _dl(task))
+            rivals = sorted(a.title or a.id for a in admitted if _dl(a) <= _dl(task))
             detail = "no room alongside higher-priority tasks" + (f" ({', '.join(rivals)})" if rivals else "")
             if over:
                 detail += "; search budget exhausted, so a better packing may exist"
@@ -161,7 +173,10 @@ def _plan(
 def _no_fit_detail(task: Task, free: Sequence[Interval], now: int) -> str:
     if task.deadline is not None and task.deadline <= now:
         return f"deadline {fmt_time(task.deadline)} has already passed"
-    gap = _longest_gap(free, now, task.deadline)
+    start = now if task.release is None else max(now, task.release)
+    if task.deadline is not None and task.release is not None and task.release >= task.deadline:
+        return f"cannot start before {fmt_time(task.release)} but its deadline is {fmt_time(task.deadline)}"
+    gap = _longest_gap(free, start, task.deadline)
     where = "" if task.deadline is None else f" before {fmt_time(task.deadline)}"
     return f"needs {task.duration} min but the longest free gap{where} is {gap} min"
 
@@ -305,6 +320,8 @@ def validate_schedule(schedule: Schedule) -> list[str]:
             problems.append(f"{p.task_id}: ends {p.end} after deadline {task.deadline}")
         if p.start < schedule.now:
             problems.append(f"{p.task_id}: starts before now")
+        if task.release is not None and p.start < task.release:
+            problems.append(f"{p.task_id}: starts before its release time")
         if not any(a <= p.start and p.end <= b for a, b in schedule.windows):
             problems.append(f"{p.task_id}: not inside a work window")
 

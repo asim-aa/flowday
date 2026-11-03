@@ -68,6 +68,13 @@ MUTANTS: list[tuple[str, str, str, list[str], bool]] = [
         False,
     ),
     (
+        "ignore release times when placing",
+        "        after = max(after, release)",
+        "        pass",
+        [f"{P}::test_schedule_is_always_valid"],
+        False,
+    ),
+    (
         "do not clip free time at `now` (equivalent: the search already starts at `now`)",
         "free = [(max(a, now), b) for a, b in subtract_intervals(windows, blocked) if b > now]",
         "free = [(a, b) for a, b in subtract_intervals(windows, blocked)]",

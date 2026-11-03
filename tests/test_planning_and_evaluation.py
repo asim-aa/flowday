@@ -189,3 +189,33 @@ def test_planner_plan_works_without_a_simulated_day():
     assert s == build_schedule(
         [], [replace(t, planned_minutes=m) for t, m in zip(tasks, (90, 22), strict=True)], [(540, 1080)]
     )
+
+
+def test_multi_day_plan_with_routines_goes_through_the_estimator_planner():
+    """Routines expanded over three days, planned in one go; hour-of-day must wrap each day, not grow."""
+    from flowday.scheduler import Routine, daily_windows, expand_routines, hhmm
+
+    routines = [
+        Routine("standup", "Standup", 15, kind="fixed", start_minute=hhmm("09:30")),
+        Routine("study", "Study", 60, kind="flexible", deadline_minute=hhmm("17:00"), task_type="study"),
+        Routine("gym", "Gym", 45, kind="fixed", start_minute=hhmm("17:00"), weekdays=frozenset({0, 2})),
+    ]
+    events, tasks = expand_routines(routines, num_days=3, first_weekday=0)
+    seen_hours: list[float] = []
+
+    class HourAware(Fixed):
+        uses_hour = True
+
+        def predict(self, df: pd.DataFrame) -> np.ndarray:
+            seen_hours.extend(df["hour"].tolist())
+            return df["estimate"].to_numpy(dtype=float) * 1.3
+
+    windows = daily_windows(3, hhmm("09:00"), hhmm("18:00"))
+    s = EstimatorPlanner(HourAware(1.3), task_features(tasks)).plan(events, tasks, windows)
+    assert validate_schedule(s) == [] and not s.dropped and len(s.placements) == 3
+    assert {p.start // 1440 for p in s.placements} == {0, 1, 2}  # one study block per day
+    assert all(0 <= h < 24 for h in seen_hours), "hours must be time of day, not minutes since the origin"
+    assert [e.id for e in s.events if e.id.startswith("gym")] == [
+        "gym@0",
+        "gym@2",
+    ]  # Monday and Wednesday only

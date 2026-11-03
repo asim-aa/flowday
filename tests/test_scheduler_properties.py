@@ -45,6 +45,8 @@ def brute_force_feasible(sc: Scenario) -> bool:
         run_len[m] = run_len[m + 1] + 1 if free[m] else 0
 
     def earliest(after: int, task: Task) -> int | None:
+        if task.release is not None:
+            after = max(after, task.release)
         for s in range(after, horizon):
             if run_len[s] >= task.duration:
                 return s if task.deadline is None or s + task.duration <= task.deadline else None

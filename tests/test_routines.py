@@ -32,6 +32,19 @@ def test_flexible_routine_becomes_tasks_with_daily_deadlines():
     ]
 
 
+def test_flexible_routine_instances_cannot_start_before_their_own_day():
+    r = Routine("read", "Read", 45, kind="flexible", deadline_minute=hhmm("17:00"), task_type="study")
+    _, tasks = expand_routines([r], num_days=3)
+    assert [t.release for t in tasks] == [0, 1440, 2880]
+    s = build_schedule([], tasks, daily_windows(3, hhmm("09:00"), hhmm("17:00")))
+    assert validate_schedule(s) == []
+    assert sorted(p.start // 1440 for p in s.placements) == [
+        0,
+        1,
+        2,
+    ]  # one per day, not all crowded onto day 0
+
+
 def test_weekday_filter_uses_first_weekday():
     gym = Routine("gym", "Gym", 60, kind="fixed", start_minute=hhmm("07:00"), weekdays=frozenset({0, 2, 4}))
     events, _ = expand_routines([gym], num_days=7, first_weekday=0)

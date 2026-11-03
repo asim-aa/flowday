@@ -50,6 +50,12 @@ def base():
             "not inside a work window",
         ),
         (lambda s: replace(s, now=500), "starts before now"),
+        (
+            lambda s: replace(
+                s, tasks=(replace(s.task("a"), release=10), *[t for t in s.tasks if t.id != "a"])
+            ),
+            "before its release time",
+        ),
         (lambda s: replace(s, placements=(s.placements[0],)), "exactly one of"),
         (lambda s: replace(s, dropped=(Dropped("b", DropReason.CAPACITY, "x"),)), "exactly one of"),
         (lambda s: replace(s, completed=(Placement("a", 0, 10),)), "exactly one of"),

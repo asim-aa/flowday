@@ -11,6 +11,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from matplotlib.axes import Axes  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
 from matplotlib.patches import Patch  # noqa: E402
 
 REPORT_DIR = Path("reports")
@@ -217,6 +218,105 @@ def fig_schedule_outcomes(results: dict[str, Any], out: Path, reclaim: bool = Fa
     plt.close(fig)
 
 
+FRONTIER_PANELS = [
+    ("deadlines_missed", "Deadlines missed per day"),
+    ("replans", "Replans per day"),
+    ("tasks_dropped", "Tasks dropped per day"),
+]
+QUANTILE_NAMES = ["gbm_q50", "gbm_q60", "gbm_q70", "gbm_q80", "gbm_q90"]
+
+
+def fig_frontier(frontier: dict[str, Any], out: Path) -> None:
+    """The price of caution: each point is a planning quantile (q50 to q90); x is the idle time it costs."""
+    fig = _fig(figsize=(12, 4.6))
+    axes = fig.subplots(
+        1, 3, gridspec_kw={"left": 0.06, "right": 0.98, "top": 0.74, "bottom": 0.2, "wspace": 0.28}
+    )
+    plain, reclaim = frontier["no_reclaim"], frontier["reclaim"]
+    for ax, (metric, title) in zip(axes, FRONTIER_PANELS, strict=True):
+        _style(ax)
+        ax.grid(axis="y", color=GRID, linewidth=0.8)
+        for summary, dashed in ((plain, False), (reclaim, True)):
+            xs = [summary[n]["idle_minutes"]["mean"] for n in QUANTILE_NAMES]
+            ys = [summary[n][metric]["mean"] for n in QUANTILE_NAMES]
+            ax.plot(
+                xs,
+                ys,
+                color=COLORS["gbm_q80"],
+                linewidth=2,
+                linestyle=(0, (4, 3)) if dashed else "-",
+                zorder=3,
+            )
+            ax.scatter(xs, ys, s=56, color=COLORS["gbm_q80"], edgecolor=SURFACE, linewidth=2, zorder=4)
+            if not dashed:
+                for n, x, y in zip(QUANTILE_NAMES, xs, ys, strict=True):
+                    ax.annotate(
+                        n[-2:], (x, y), textcoords="offset points", xytext=(6, 6), fontsize=8, color=INK_2
+                    )
+        for name, marker in (("trust", "s"), ("type_median", "D"), ("oracle", "^")):
+            ax.scatter(
+                plain[name]["idle_minutes"]["mean"],
+                plain[name][metric]["mean"],
+                s=70,
+                marker=marker,
+                color=COLORS[name],
+                edgecolor=SURFACE,
+                linewidth=1.5,
+                zorder=5,
+            )
+        ax.set_title(title, fontsize=10, color=INK, loc="left")
+        ax.set_xlabel("Idle minutes per day", color=INK_2, fontsize=9)
+        ax.set_ylim(bottom=0)
+    handles = [
+        Line2D(
+            [],
+            [],
+            color=COLORS["gbm_q80"],
+            linewidth=2,
+            marker="o",
+            label="GBM, planning quantile q50 to q90",
+        ),
+        Line2D(
+            [],
+            [],
+            color=COLORS["gbm_q80"],
+            linewidth=2,
+            linestyle=(0, (4, 3)),
+            label="same, early finishes reclaimed",
+        ),
+        Line2D([], [], color=COLORS["trust"], marker="s", linestyle="", label="Trust estimate"),
+        Line2D([], [], color=COLORS["type_median"], marker="D", linestyle="", label="Per-type median"),
+        Line2D([], [], color=COLORS["oracle"], marker="^", linestyle="", label="Oracle (reference)"),
+    ]
+    fig.legend(
+        handles=handles,
+        loc="lower center",
+        ncol=5,
+        frameon=False,
+        fontsize=9,
+        labelcolor=INK_2,
+        bbox_to_anchor=(0.5, 0.04),
+    )
+    fig.text(
+        0.01,
+        0.94,
+        "The price of caution: planning at a higher percentile",
+        fontsize=13,
+        color=INK,
+        weight="bold",
+    )
+    fig.text(
+        0.01,
+        0.875,
+        "Moving right plans for longer tasks: fewer misses and replans, more idle time and dropped tasks. Reclaiming early finishes shifts the curve left.",
+        fontsize=9,
+        color=INK_2,
+    )
+    _footer(fig)
+    fig.savefig(out, dpi=150, facecolor=SURFACE)
+    plt.close(fig)
+
+
 def make_figures(report_dir: Path = REPORT_DIR) -> list[Path]:
     out_dir = report_dir / "figures"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -236,6 +336,13 @@ def make_figures(report_dir: Path = REPORT_DIR) -> list[Path]:
         target = out_dir / "fig3b_schedule_outcomes_reclaim.png"
         fig_schedule_outcomes(json.loads(reclaim_path.read_text()), target, reclaim=True)
         made.append(target)
+    sens_path = report_dir / "sensitivity.json"
+    if sens_path.exists():
+        sens = json.loads(sens_path.read_text())
+        if "frontier" in sens:
+            target = out_dir / "fig4_caution_frontier.png"
+            fig_frontier(sens["frontier"], target)
+            made.append(target)
     return made
 
 

@@ -55,6 +55,7 @@ def tasks_strategy(draw: st.DrawFn, windows: list[Interval], max_tasks: int = 7)
                 deadline=draw(st.one_of(st.none(), st.integers(windows[0][0], horizon))),
                 priority=draw(st.integers(1, 5)),
                 planned_minutes=planned,
+                release=draw(st.one_of(st.none(), st.none(), st.integers(windows[0][0], horizon))),
             )
         )
     return tasks
@@ -102,6 +103,9 @@ def planted_scenarios(draw: st.DrawFn, max_tasks: int = 7) -> Scenario:
                 estimated_minutes=b - a,
                 deadline=b + slack if draw(st.booleans()) else None,
                 priority=draw(st.integers(1, 5)),
+                release=draw(
+                    st.one_of(st.none(), st.integers(max(0, a - 60), a))
+                ),  # never after the planted start
             )
         )
     order = draw(st.permutations(tasks))

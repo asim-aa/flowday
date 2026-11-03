@@ -6,6 +6,7 @@ for the GBMs) to predicted *actual minutes*.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol, Self
 
 import numpy as np
@@ -103,9 +104,20 @@ class GBMEstimator:
 
     uses_hour = True
 
-    def __init__(self, quantile: float | None = None, seed: int = 0, **params: float | int) -> None:
+    def __init__(
+        self,
+        quantile: float | None = None,
+        seed: int = 0,
+        *,
+        drop: Sequence[str] = (),
+        **params: float | int,
+    ) -> None:
+        unknown = set(drop) - set(GBM_FEATURES)
+        if unknown or "log_estimate" in drop:
+            raise ValueError(f"can only drop features from {GBM_FEATURES[1:]}, got {sorted(drop)}")
         self.quantile = quantile
         self.seed = seed
+        self.drop = tuple(drop)  # features replaced by a constant, for ablation studies
         self.params: dict[str, float | int] = {
             "max_iter": 200,
             "learning_rate": 0.1,
@@ -130,6 +142,8 @@ class GBMEstimator:
         }
         for f in HISTORY_FEATURES:
             cols[f] = df[f].to_numpy(dtype=float) if f in df else np.full(len(df), np.nan)
+        for name in self.drop:
+            cols[name] = np.zeros(len(df))  # a constant column can never be split on (all-NaN breaks binning)
         return np.column_stack([cols[c] for c in GBM_FEATURES])
 
     def fit(self, df: pd.DataFrame) -> Self:

@@ -43,4 +43,5 @@ def fitted(parts: dict[str, pd.DataFrame]) -> dict[str, Estimator]:
         "gbm": GBMEstimator(None, SMALL.seed).fit(train),
         "gbm_q50": GBMEstimator(0.5, SMALL.seed).fit(train),
         "gbm_q80": GBMEstimator(0.8, SMALL.seed).fit(train),
+        **{f"gbm_q{q}": GBMEstimator(q / 100, SMALL.seed, max_iter=60).fit(train) for q in (60, 70, 90)},
     }

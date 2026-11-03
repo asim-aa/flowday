@@ -73,6 +73,15 @@ def test_overload_drops_lowest_priority_with_reason():
     assert "keep" in d.detail
 
 
+def test_drop_reasons_name_tasks_by_title_when_they_have_one():
+    tasks = [
+        Task("a", "x", 240, deadline=hhmm("13:00"), priority=5, title="Write the proposal"),
+        Task("b", "x", 60, deadline=hhmm("13:00"), priority=1, title="Tidy desk"),
+    ]
+    (d,) = build_schedule([], tasks, DAY).dropped
+    assert d.task_id == "b" and "Write the proposal" in d.detail and "(a)" not in d.detail
+
+
 def test_higher_priority_wins_even_with_later_deadline():
     tasks = [
         Task("urgent_low", "x", 300, deadline=hhmm("15:00"), priority=1),
@@ -100,6 +109,22 @@ def test_deadline_before_work_starts_is_dropped():
 def test_planned_minutes_override_the_estimate():
     s = build_schedule([], [Task("a", "x", 30, planned_minutes=90)], DAY)
     assert starts(s)["a"] == (540, 630)
+
+
+def test_release_time_delays_a_task_and_can_make_it_impossible():
+    s = build_schedule([], [Task("a", "x", 30, release=hhmm("11:00"))], DAY)
+    assert starts(s)["a"] == (hhmm("11:00"), hhmm("11:30"))
+    late = build_schedule([], [Task("b", "x", 30, deadline=hhmm("10:00"), release=hhmm("11:00"))], DAY)
+    (d,) = late.dropped
+    assert d.reason is DropReason.NO_FIT_ALONE and "cannot start before 11:00" in d.detail
+    tight = build_schedule([], [Task("c", "x", 60, deadline=hhmm("12:00"), release=hhmm("11:30"))], DAY)
+    assert tight.dropped and "longest free gap" in tight.dropped[0].detail
+
+
+def test_other_tasks_fill_the_time_before_a_release():
+    tasks = [Task("later", "x", 60, release=hhmm("13:00")), Task("now", "x", 60)]
+    s = build_schedule([], tasks, DAY)
+    assert starts(s) == {"now": (540, 600), "later": (780, 840)}
 
 
 def test_now_clips_free_time():

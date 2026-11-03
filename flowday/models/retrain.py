@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import Any
 
 import joblib
 import pandas as pd
@@ -32,7 +33,7 @@ MIN_ROWS = 60  # fewer measured completions than this is not enough to fit anyth
 MIN_USERS_FOR_USER_SPLIT = 10
 
 
-def _params(n_rows: int) -> dict[str, float | int]:
+def _params(n_rows: int) -> dict[str, Any]:
     return {
         "max_iter": 100,
         "learning_rate": 0.1,

@@ -48,15 +48,23 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+.
 | Command | What it does | Time (laptop) |
 |---|---|---|
 | `make install` | create the virtualenv and install dependencies | |
-| `make test` | run the full pytest suite (unit + property-based + headless app tests) | ~50 s |
-| `make check` | ruff + strict mypy + tests | ~1 min |
-| `make train` | generate synthetic data, tune and train models, write `artifacts/` and `reports/model_metrics.json` | ~40 s |
-| `make evaluate` | run the scheduler end to end with every estimator; write `reports/` and the figures | ~40 s |
+| `make test` | the full pytest suite: unit, property-based, headless app, CLI and figure tests | ~1 min |
+| `make check` | ruff + strict mypy on the package and the tests + the suite (what CI runs) | ~1.5 min |
+| `make coverage` | the suite with line coverage | ~1.5 min |
+| `make mutation` | inject known bugs into the scheduler; every non-equivalent one must be caught | ~1 min |
+| `make train` | generate synthetic data, tune and train models, write `artifacts/` and `reports/model_metrics.json` | 1 to 3 min |
+| `make evaluate` | run the scheduler end to end with every estimator, early finishes not reclaimed and reclaimed; write `reports/` and figures | 2 to 4 min |
+| `make sensitivity` | feature ablation, generator sweep over noise / bias / seeds, and the caution frontier | ~15 to 20 min |
 | `make figures` | regenerate the figures from the JSON reports | seconds |
 | `make app` | launch the Streamlit app (run `make train` first for the ML estimators) | |
+| `make synth-log`, `make retrain-from-log` | write a synthetic event log, then retrain the models from a log | seconds |
 
-Everything is seeded; re-training and re-running the evaluation reproduced the committed
-`reports/schedule_results.json` exactly (checked by diffing the JSON). Generated data (`data/`) and the trained model (`artifacts/`) are git-ignored.
+Timings are on a laptop that was also busy with other work; they vary a lot with load.
+
+Everything is seeded. Re-training and re-running the evaluation in a fresh clone reproduced the committed
+`reports/` byte for byte (checked with `git diff`). Generated data (`data/`) and trained models
+(`artifacts/`) are git-ignored. CI (`.github/workflows/ci.yml`) runs `make check` on Python 3.11, 3.12 and
+3.13; I ran the same on 3.11, 3.12 and 3.13 locally, but the workflow itself has not run on GitHub yet.
 
 ## How it fits together
 
@@ -65,12 +73,16 @@ flowday/
   scheduler/    deterministic core: Event, Task, Schedule, build_schedule, replan, complete,
                 expand_routines, validate_schedule. Standard library only.
   simulator/    synthetic users, days and histories; simulate_day executes a plan with true durations
-  models/       features, 3 baselines, GBM point + quantile models, metrics, train CLI
+                (optionally reclaiming early finishes) and measures how much each replan disturbs the day
+  models/       features, 3 baselines, GBM point + quantile models, metrics, train CLI,
+                retrain.py (fit the models from an event log)
   planning.py   glue: sizes tasks with an estimator, then schedules / replans
-  dataset.py    builds the synthetic dataset
-  evaluation/   end-to-end runner (parallel, paired, cluster-bootstrap CIs) and the three figures
-  eventlog/     SQLite schema + observer that logs plans, completions and actual durations
+  dataset.py    builds the synthetic dataset (and applies the generator knobs)
+  evaluation/   end-to-end runner (parallel, paired, cluster-bootstrap CIs), sensitivity analyses, figures
+  eventlog/     SQLite schema (v2, with migration), observer that logs plans, completions and durations,
+                and simulate.py to write synthetic days into a log
   app/          Streamlit app; pure logic lives in session.py / inputs.py so it is unit-tested
+scripts/        mutation_check.py: inject known bugs into the scheduler and check the tests notice
 tests/          pytest + hypothesis
 reports/        committed results: JSON, markdown tables and figures
 ```
@@ -82,8 +94,8 @@ The dependency direction is `scheduler` ← `simulator` ← `models` ← `planni
 
 **Model.** Times are integer minutes from an arbitrary origin. Work happens inside *windows* (one per
 day, so multi-day horizons work). *Fixed events* block time. *Tasks* have a type, a duration, an optional
-hard deadline and a priority (1 to 5, 5 most important). Tasks are non-preemptible: each gets one
-contiguous slot inside a single free gap.
+hard deadline, an optional release time (earliest start) and a priority (1 to 5, 5 most important). Tasks
+are non-preemptible: each gets one contiguous slot inside a single free gap.
 
 **Algorithm.**
 
@@ -109,7 +121,11 @@ Fixed events are never moved even if the overrunning task ran into one: that col
 (`collisions()`), not hidden.
 
 **Recurring routines** (`Routine`, `expand_routines`) expand a daily or per-weekday pattern into fixed
-events (a study block at 19:00) or flexible tasks (study for 60 minutes before 21:00).
+events (a study block at 19:00) or flexible tasks (study for 60 minutes before 21:00). A flexible instance
+is released at the start of its own day, so tomorrow's study block is never planned today. (An earlier
+version had no release times and did plan it today; a multi-day test through the estimator planner caught
+it. Within the search, tasks that can start now are tried before tasks that must wait for their release,
+so a late release does not leave a morning empty; tasks without a release keep their exact earlier order.)
 
 **Tradeoffs, stated honestly.**
 
@@ -124,8 +140,8 @@ events (a study block at 19:00) or flexible tasks (study for 60 minutes before 2
   still valid (no deadline is ever missed) but may drop more than necessary, and
   `Schedule.search_truncated` says so. In an instrumented run of 4,500 simulated days (73,497 feasibility
   searches) the budget was never reached.
-- *No splitting, no dependencies, no release times, no travel time or buffers.* Each is a reasonable
-  extension; none is modelled.
+- *No splitting, no dependencies, no travel time or buffers.* Each is a reasonable extension; none is
+  modelled. (Release times exist, but only routines use them.)
 - *Placement is earliest-fit, left-packed.* Good for deadlines, indifferent to what a person would rather
   do at which hour.
 - *Deadlines are hard.* There is no "late but still worth doing" option.
@@ -134,18 +150,32 @@ events (a study block at 19:00) or flexible tasks (study for 60 minutes before 2
 
 | Property | How it is checked |
 |---|---|
-| No two scheduled items overlap; nothing outside work hours; every placed task ends by its deadline; every task is exactly one of placed / completed / dropped | hypothesis, 200 random scenarios, `validate_schedule` |
+| No two scheduled items overlap; nothing outside work hours; every placed task ends by its deadline and has its full length; nothing starts before `now`; every task is exactly one of placed / completed / dropped | hypothesis, 200 random scenarios, `validate_schedule` |
 | Fixed events never move | hypothesis, events compared before and after, including through whole days of replans |
 | Nothing is dropped when a feasible schedule exists, and vice versa | hypothesis against an independent brute-force oracle (every permutation, minute-grid representation) |
+| A planted exact packing (tasks that tile the free time exactly, so demand equals capacity) is always found | hypothesis, `planted_scenarios` |
 | A task is dropped only if it cannot fit beside the tasks that outrank it | same oracle |
 | Drop reasons are truthful | each `no_fit_alone` / `capacity` claim is re-checked by scheduling the task alone |
 | Replanning never touches completed work, places nothing before `now` or before the overrun ends | hypothesis over random completion prefixes, overruns and clock values, including a clock *inside* completed work |
+| An exhausted search budget gives a worse packing, never an invalid one, and says so | node budgets of 1, 3 and 10 against the same scenarios; untruncated results equal the exact ones |
+| The validator itself detects each kind of violation | `tests/test_validate_and_budget.py` corrupts a valid schedule nine ways |
 | Deterministic | same input, equal output |
 
-I also checked that these tests can fail: I injected four bugs into the scheduler (ignore deadlines,
-forget fixed events, forget completed work in replans, an over-aggressive pruning rule). The first run
-caught three; the fourth survived because my replan strategy never put `now` inside completed work. I
-widened the strategy and all four are now caught.
+**A correction.** An earlier version of this README said `validate_schedule` checked deadlines, work-hour
+containment, task length and "nothing before now". It did not: a refactor of the validator had silently
+deleted those four checks, so the property tests were not verifying them (the scheduler itself passed all of
+them once the validator was fixed). I found this only when I wrote tests for the validator itself, which I
+should have written first. The checks are restored, each has a test, and the mutation check below now
+catches bugs through the validator.
+
+**Do the tests fail when the code is wrong?** `make mutation` (`scripts/mutation_check.py`) injects nine
+known bugs into the scheduler (ignore deadlines, ignore fixed events, ignore work windows, forget completed
+work when replanning, record the wrong overrun end, an off-by-one in the pruning rule, admit low priority
+first, ignore release times, stop clipping free time at `now`), runs only the property tests meant to catch
+each, and restores the file. Eight are caught. The ninth is an *equivalent mutant*: the search already starts at `now`, so
+clipping free time there changes no behaviour and no test can or should catch it. The off-by-one pruning
+mutant initially survived random testing, because random scenarios almost never make demand exactly equal
+capacity; that is why the planted exact-packing property exists.
 
 ## Synthetic data
 
@@ -319,38 +349,70 @@ take real data later: `users.source` is `synthetic`, `demo` or `real`, and `Even
 returns exactly the table the models train on (user, day, task type, estimate, start hour, actual).
 
 ```
-users        user_id PK, source CHECK IN (synthetic, demo, real), created_at
+users        user_id PK (text), source CHECK IN (synthetic, demo, real), created_at
 tasks        (user_id, task_id) PK, day (ISO date), task_type, estimated_minutes > 0,
              deadline_min, priority, title, created_at
-plans        plan_id PK, user_id, day, trigger CHECK IN (initial, overrun, manual), estimator,
+plans        plan_id PK, user_id, day, trigger CHECK IN (initial, overrun, early, manual), estimator,
              parent_plan_id -> plans, now_min, created_at          (one row per plan snapshot)
 plan_items   (plan_id, kind, item_id) PK, kind IN (event, task, completed, dropped),
              start_min, end_min, planned_minutes, drop_reason, drop_detail
 completions  completion_id PK, (user_id, task_id) UNIQUE -> tasks, started_min, ended_min > started_min,
-             actual_minutes, planned_minutes, plan_id -> plans, logged_at
+             actual_minutes, planned_minutes, plan_id -> plans, logged_at,
+             measurement CHECK IN (measured, assumed)
 ```
 
 Times are minutes since midnight of the row's `day`. Foreign keys and CHECK constraints are enforced and
-tested (including a bug the tests caught: `INSERT OR IGNORE` silently swallowed CHECK violations, so
-invalid sources would have vanished instead of failing). A test trains a model directly from a logged
-database to show the path from logged data to a fitted estimator works.
+tested. Two design points worth knowing:
+
+- **Measured versus assumed durations.** "Done as planned" in the app is *assumed*: the logged actual is
+  just the plan. Training on it would teach a model its own predictions back, so `history_frame()` returns
+  `measured` rows only unless asked otherwise. Ran-over and finished-early reports, and everything the
+  simulator logs, are `measured`.
+- **Schema versions and migration.** v2 added `completions.measurement` and the `early` plan trigger.
+  Opening a v1 file migrates it in place (rebuilding `plans`, because SQLite cannot alter a CHECK
+  constraint; v1 demo rows become `assumed` since they could not say). The migration is tested against a
+  literal v1 database, an unknown version is refused, and a file that is already current is left alone.
+  A test caught an earlier bug here: `INSERT OR IGNORE` silently swallowed CHECK violations, so an invalid
+  source would have vanished instead of failing.
+
+### Closing the loop: log, then model
+
+`make synth-log` simulates synthetic users into a log (`data/synthetic_log.db`) and
+`make retrain-from-log LOG=<db>` fits the estimators from any log's measured completions. Before the final
+fit it reports held-out MAE against the baselines (by held-out user when the log has at least 10 users,
+otherwise on the last 20% of days) and refuses logs with fewer than 60 measured completions. On the default
+synthetic log (20 users, 40 days, 4,242 completions, 4 held-out users, so treat the numbers as rough):
+
+| Trust | Global multiplier | Per-type median | GBM | GBM q80 |
+|---|---|---|---|---|
+| 17.0 | 14.8 | 12.0 | 10.1 | 13.7 |
+
+That shows the path from logged completions to a fitted model works end to end and ranks the estimators as
+before. It is not a claim about real data, and nothing retrains automatically: there is no scheduler, drift
+detection or champion/challenger comparison.
 
 ## The app
 
-`make app` starts a Streamlit app. Edit the fixed events and tasks, choose how durations are estimated
-(your estimate, three baselines, or ML median / cautious q80), and press **Plan my day**. The timeline
-shows fixed events, planned and finished tasks; tasks that did not fit are listed with the reason. For
-the next task, press **Done as planned**, or enter minutes and press **Task ran over**: the rest of the
-day replans, the app says in plain English what moved or no longer fits, and warns when the overrun ran
-into a fixed event. **Compare estimators** plans the same inputs under every estimator side by side. The
-**ML persona** selector chooses between a brand-new user and one of eight synthetic users whose history
-the model uses. With no trained model present, the app falls back to the user's own estimates and offers
-to train a small demo model. Plans and completions are logged to the event log unless the sidebar box is
-unticked.
+`make app` starts a Streamlit app. Edit the fixed events, tasks and recurring routines, pick the weekday,
+choose how durations are estimated (your estimate, three baselines, ML median, or ML cautious with a
+"how cautious?" slider from the 60th to the 90th percentile), and press **Plan my day**. The timeline shows
+fixed events, planned and finished tasks; tasks that did not fit are listed with the reason, named by title.
+
+For the next task you can press **Done as planned** (logged as *assumed*), enter **ran over by N minutes**
+(the rest of the day replans), or enter **finished early by N minutes** (the rest of the day is pulled
+forward). The app says in plain English what moved or no longer fits, and warns when an overrun ran into a
+fixed event. **Compare estimators** plans the same inputs under every estimator side by side.
+
+The **ML persona** selector chooses between a brand-new user, one of eight synthetic users whose history
+the model uses, and *me*, whose history comes from the app's own event log. Once the log holds 60 measured
+completions, **Retrain on my log** fits a model on them and adds it to the estimator list. With no trained
+model present the app falls back to the user's own estimates and offers to train a small demo model. Plans
+and completions are logged unless the sidebar box is unticked.
 
 The app has no auth, hosted database, payments or LLM by design. I checked it in a real browser and
-headlessly with Streamlit's `AppTest`; one bug surfaced that way (Streamlit binds a button's `args` when
-the page renders, so the overrun minutes must be read when the button is clicked).
+headlessly with Streamlit's `AppTest`; both turned up bugs I fixed (Streamlit binds a button's `args` when
+the page renders, so the minutes must be read at click time; an overrun into a fixed event was not called
+out; drop reasons showed internal task ids instead of titles).
 
 ## Tests and quality
 

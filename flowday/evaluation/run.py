@@ -104,15 +104,23 @@ _STATE: dict[str, Any] = {}
 
 
 def _init_worker(
-    models: dict[str, Estimator], cfg: DataConfig, users: dict[int, UserProfile], reclaim_early: bool
+    models: dict[str, Estimator],
+    cfg: DataConfig,
+    users: dict[int, UserProfile],
+    reclaim_early: bool,
+    estimators: list[str],
 ) -> None:
     threadpool_limits(1)  # tiny predict() calls: OpenMP threading only adds overhead
-    _STATE.update(models=models, cfg=cfg, users=users, reclaim_early=reclaim_early)
+    _STATE.update(models=models, cfg=cfg, users=users, reclaim_early=reclaim_early, estimators=estimators)
 
 
 def _job(user_id: int) -> list[dict[str, Any]]:
     return evaluate_user(
-        _STATE["users"][user_id], _STATE["cfg"], _STATE["models"], reclaim_early=_STATE["reclaim_early"]
+        _STATE["users"][user_id],
+        _STATE["cfg"],
+        _STATE["models"],
+        _STATE["estimators"],
+        reclaim_early=_STATE["reclaim_early"],
     )
 
 
@@ -122,14 +130,16 @@ def run_simulations(
     user_ids: list[int],
     workers: int,
     reclaim_early: bool = False,
+    estimators: list[str] | None = None,
 ) -> pd.DataFrame:
+    names = list(estimators or ESTIMATORS)
     users = {u.user_id: u for u in make_users(cfg)}
     if workers <= 1:
-        _init_worker(models, cfg, users, reclaim_early)
+        _init_worker(models, cfg, users, reclaim_early, names)
         results = [_job(u) for u in user_ids]
     else:
         with ProcessPoolExecutor(
-            workers, initializer=_init_worker, initargs=(models, cfg, users, reclaim_early)
+            workers, initializer=_init_worker, initargs=(models, cfg, users, reclaim_early, names)
         ) as pool:
             results = list(pool.map(_job, user_ids, chunksize=2))
     return pd.DataFrame([row for rows in results for row in rows])
@@ -142,7 +152,7 @@ def summarize(rows: pd.DataFrame, baseline: str = "trust") -> dict[str, Any]:
         "n_days": int(rows.groupby("user_id")["day"].nunique().iloc[0]),
     }
     base = rows[rows["estimator"] == baseline].set_index(["user_id", "day"])
-    for name in ESTIMATORS:
+    for name in dict.fromkeys(rows["estimator"]):  # in order of appearance
         sub = rows[rows["estimator"] == name].set_index(["user_id", "day"])
         entry: dict[str, Any] = {}
         for metric in METRICS:
@@ -162,12 +172,12 @@ def markdown_table(summary: dict[str, Any], metrics: list[str] | None = None) ->
     metrics = metrics or list(METRICS)
     head = "| Estimator | " + " | ".join(METRICS[m].replace(" / day", "") for m in metrics) + " |"
     lines = [head, "|" + "---|" * (len(metrics) + 1)]
-    for name in ESTIMATORS:
+    for name in [n for n in summary if isinstance(summary[n], dict) and n not in ("n_users", "n_days")]:
         cells = []
         for m in metrics:
             e = summary[name][m]
             cells.append(f"{e['mean']:.2f} [{e['ci95'][0]:.2f}, {e['ci95'][1]:.2f}]")
-        lines.append(f"| {LABELS[name]} | " + " | ".join(cells) + " |")
+        lines.append(f"| {LABELS.get(name, name)} | " + " | ".join(cells) + " |")
     return "\n".join(lines)
 
 

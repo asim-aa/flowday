@@ -15,8 +15,9 @@ def expand_routines(
 
     Day `d` starts at minute `d * 1440` and has weekday `(first_weekday + d) % 7`.
     Fixed routines become Events with id `"<routine>@<day>"`; flexible routines become Tasks
-    (type = the routine's task_type, estimate = its duration) with the same id scheme and a
-    deadline of `deadline_minute` on that day, if given.
+    (type = the routine's task_type, estimate = its duration) with the same id scheme, a
+    deadline of `deadline_minute` on that day if given, and a release time at the start of that day
+    so an instance is never planned on an earlier day.
     """
     events: list[Event] = []
     tasks: list[Task] = []
@@ -33,5 +34,7 @@ def expand_routines(
                 events.append(Event(ident, start, start + r.duration, r.title))
             else:
                 deadline = None if r.deadline_minute is None else origin + r.deadline_minute
-                tasks.append(Task(ident, r.task_type, r.duration, deadline, r.priority, title=r.title))
+                tasks.append(
+                    Task(ident, r.task_type, r.duration, deadline, r.priority, title=r.title, release=origin)
+                )
     return events, tasks
