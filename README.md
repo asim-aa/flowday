@@ -148,7 +148,8 @@ Two separate things, both optional:
 
 - **A project page on github.io.** `docs/index.html` is a static page (the argument, the diagrams, the results, the
   limits). In the repository settings choose *Pages, deploy from a branch*, branch `main`, folder `/docs`. `make site`
-  refreshes its figures; the numbers in it are copied by hand from this README, so change them together.
+  refreshes its figure and the three real plans it draws (`docs/day.json`); the other numbers in it are copied by
+  hand from this README, so change them together.
 - **A live app on Streamlit Community Cloud.** GitHub Pages cannot run a Python server, so the app needs its own host.
   At <https://share.streamlit.io> create an app from this repository with main file `flowday/app/main.py`, pick
   Python 3.12 under *Advanced settings*, and add the secret `FLOWDAY_HOSTED = "1"` (Streamlit exposes root-level
@@ -176,8 +177,9 @@ flowday/
                 and simulate.py to write synthetic days into a log
   app/          Streamlit app; pure logic lives in session.py / inputs.py so it is unit-tested
 scripts/        mutation_check.py: inject known bugs into the scheduler and check the tests notice;
-                anchor_experiment.py: an experiment that was tried and not adopted (see "Synthetic data")
-docs/           the static github.io project page (index.html + two figures)
+                anchor_experiment.py: an experiment that was tried and not adopted (see "Synthetic data");
+                make_site_data.py: exports the three real plans the project page draws
+docs/           the static github.io project page (index.html, day.json, one figure)
 tests/          pytest + hypothesis
 reports/        committed results: JSON, markdown tables and figures
 ```

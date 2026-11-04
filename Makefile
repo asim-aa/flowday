@@ -49,8 +49,10 @@ LOG ?= data/synthetic_log.db
 retrain-from-log:
 	uv run python -m flowday.models.retrain --db $(LOG)
 
-# refresh the figures used by the github.io page (docs/); the page's numbers are copied by hand from the README
+# refresh what the github.io page (docs/) is built from: one figure and the three real plans (needs `make train`);
+# the page's other numbers are copied by hand from the README
 site:
-	cp reports/figures/fig3_schedule_outcomes.png reports/figures/fig4_caution_frontier.png docs/figures/
+	cp reports/figures/fig4_caution_frontier.png docs/figures/
+	uv run python scripts/make_site_data.py
 
 all: train evaluate
