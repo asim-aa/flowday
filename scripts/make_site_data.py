@@ -23,8 +23,8 @@ from flowday.scheduler import Schedule
 EVENTS = pd.DataFrame(
     {
         "title": ["Team standup", "Lunch", "1:1 with manager"],
-        "start": ["09:30", "12:00", "14:00"],
-        "end": ["10:00", "13:00", "14:30"],
+        "start": ["09:00", "12:00", "14:00"],
+        "end": ["09:30", "13:00", "14:30"],
     }
 )
 TASKS = pd.DataFrame(
@@ -38,7 +38,7 @@ TASKS = pd.DataFrame(
             "Study",
         ],
         "type": ["writing", "email", "coding", "meeting_prep", "admin", "study"],
-        "estimate": [90, 20, 60, 30, 25, 60],
+        "estimate": [60, 20, 60, 30, 25, 60],
         "deadline": ["15:00", "", "17:00", "13:50", "", ""],
         "priority": [5, 3, 4, 4, 2, 3],
     }

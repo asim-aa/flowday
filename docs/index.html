@@ -9,7 +9,8 @@
 <meta property="og:description" content="Trusted estimates over-promise. A learned estimate behind a deterministic scheduler fixes much of it, on synthetic data, and the page says exactly what that does and does not show.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Crect x='6' y='8' width='13' height='4' rx='2' fill='white'/%3E%3Crect x='11' y='14' width='15' height='4' rx='2' fill='white' opacity='.8'/%3E%3Crect x='8' y='20' width='10' height='4' rx='2' fill='white' opacity='.6'/%3E%3C/svg%3E">
 <!-- Numbers on this page are copied by hand from README.md and reports/*.json. Change them together.
-     docs/day.json comes from scripts/make_site_data.py; figures from `make site`. -->
+     docs/day.json comes from scripts/make_site_data.py; figures from `make site`. The sentence under the hero
+     (".takeaway") describes what is in day.json: re-read it whenever day.json is regenerated. -->
 <script>
   // set the theme before first paint so there is no flash
   try { const t = localStorage.getItem("flowday-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
@@ -237,7 +238,7 @@
 
     <div class="card day">
       <h2>One day, three plans</h2>
-      <p class="sub">The app's default day, planned for a brand-new user. This is only what the scheduler reserves; nothing is simulated.</p>
+      <p class="sub">The app's default events and tasks (recurring routines left out), planned for a brand-new user. This is only what the scheduler reserves; nothing is simulated.</p>
       <div class="scroll"><div class="tl" id="timeline" aria-live="polite">Loading the plans…</div></div>
       <div class="legend" aria-hidden="true">
         <span><i class="k-est"></i>your estimate</span>
@@ -245,7 +246,7 @@
         <span><i class="k-evt"></i>fixed event (band)</span>
       </div>
       <p class="sub" id="events" style="margin:6px 0 0"></p>
-      <p class="takeaway">Trusting the estimate fits everything, on paper. The ML plans reserve what this kind of task usually takes, so they find out at 9am that the proposal does not fit in one piece before its deadline, and say so, instead of at 3pm.</p>
+      <p class="takeaway">Trusting the estimate fits everything back to back, on paper. The ML median plan keeps all six tasks but reserves far more for the ones people underestimate: the login bug gets 111 minutes against the 60 you said, the proposal 93. The cautious plan reserves more again, so it has to leave out Study, and says why. That is the trade the numbers below measure.</p>
     </div>
   </div>
 </header>
@@ -363,7 +364,7 @@
       <div class="card limit"><h3>Calibration breaks under shift</h3><p>For new users who underestimate more than anyone in training, 80th-percentile coverage is <b>0.68 in week one</b>. Anchoring on the user's history lifts it only to 0.72, because 14% of first-week tasks have no history. I tried it and did not adopt it.</p></div>
       <div class="card limit"><h3>Robustness is shown for mild departures only</h3><p>Seeds, noise and bias change the size of the gains, not their direction. Heavy tails and steadily drifting habits do not break it, but both are still log-linear plus noise. <b>Abrupt changes, interdependent tasks and a user who reacts to the planner were not tried.</b></p></div>
       <div class="card limit"><h3>One day at a time</h3><p>No experiment evaluates a multi-day horizon, and the scheduler has no task splitting or dependencies.</p></div>
-      <div class="card limit"><h3>Caution can drop your top task</h3><p>As the plans at the top show, tasks cannot be split, so a long reservation can leave <b>no gap that fits</b>. The planner says so; it does not fix it.</p></div>
+      <div class="card limit"><h3>Caution can leave work out</h3><p>The cautious plan at the top drops Study. And because tasks cannot be split, a long reservation can leave <b>no gap that fits at all</b>, even for a high-priority task. The planner says so and why; it does not fix it.</p></div>
     </div>
   </div>
 </section>
