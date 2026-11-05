@@ -1,5 +1,6 @@
 """Deterministic scheduling core. Depends only on the standard library."""
 
+from .carry import MAX_PRIORITY, carry_over
 from .core import (
     DEFAULT_NODE_BUDGET,
     build_schedule,
@@ -36,6 +37,7 @@ from .timeutil import (
 __all__ = [
     "ALL_WEEKDAYS",
     "DEFAULT_NODE_BUDGET",
+    "MAX_PRIORITY",
     "MINUTES_PER_DAY",
     "DropReason",
     "Dropped",
@@ -47,6 +49,7 @@ __all__ = [
     "Schedule",
     "Task",
     "build_schedule",
+    "carry_over",
     "collisions",
     "complete",
     "daily_windows",

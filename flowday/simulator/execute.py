@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from flowday.scheduler import (
     Overrun,
     Placement,
     Schedule,
+    Task,
     build_schedule,
+    carry_over,
     collisions,
     complete,
     replan,
@@ -61,6 +64,9 @@ class DayOutcome:
     pull_forwards:         (only with reclaim_early) early finishes after which the remaining plan changed.
     replan_churn:          how many not-yet-started tasks had their start time changed, summed over all
                            replans: a measure of how much a replan disturbs the rest of the day.
+    carried_in:            tasks that entered this day carried over from an earlier one (multi-day runs).
+    carry_days_completed:  summed over the tasks completed today, how many days each had been carried:
+                           the delay that carrying cost them.
     """
 
     n_tasks: int
@@ -74,6 +80,8 @@ class DayOutcome:
     schedule: Schedule
     pull_forwards: int = 0
     replan_churn: int = 0
+    carried_in: int = 0
+    carry_days_completed: int = 0
 
     def as_row(self) -> dict[str, int]:
         return {
@@ -87,6 +95,8 @@ class DayOutcome:
             "overtime_minutes": self.overtime_minutes,
             "pull_forwards": self.pull_forwards,
             "replan_churn": self.replan_churn,
+            "carried_in": self.carried_in,
+            "carry_days_completed": self.carry_days_completed,
         }
 
 
@@ -137,6 +147,30 @@ def simulate_day(
     return _outcome(day, schedule, replans, pull_forwards, churn)
 
 
+def simulate_days(
+    days: Sequence[SyntheticDay],
+    make_planner: Callable[[SyntheticDay], Planner],
+    *,
+    reclaim_early: bool = False,
+    reclaim_min_gain: int = 0,
+    age_priority: bool = True,
+) -> list[DayOutcome]:
+    """Run consecutive days. Whatever a day could not finish is carried into the next one (see
+    `carry_over`), keeping its hidden noise so it takes the same true time whenever it finally runs.
+    `make_planner` is called once per day, with that day's carried tasks already added to it."""
+    outcomes: list[DayOutcome] = []
+    carried: tuple[Task, ...] = ()
+    noise: dict[str, float] = {}
+    for day in days:
+        noise.update(day.noise)
+        tasks = (*carried, *day.tasks)
+        today = replace(day, tasks=tasks, noise={t.id: noise[t.id] for t in tasks})
+        outcome = simulate_day(today, make_planner(today), None, reclaim_early, reclaim_min_gain)
+        outcomes.append(outcome)
+        carried = carry_over(outcome.schedule, age_priority)
+    return outcomes
+
+
 def _moved(before: Schedule, after: Schedule) -> int:
     """Tasks planned both before and after a replan whose start time changed."""
     old = {p.task_id: p.start for p in before.placements}
@@ -162,6 +196,8 @@ def _outcome(
         schedule=schedule,
         pull_forwards=pull_forwards,
         replan_churn=churn,
+        carried_in=sum(1 for t in day.tasks if t.carried),
+        carry_days_completed=sum(schedule.task(p.task_id).carried for p in done),
     )
 
 

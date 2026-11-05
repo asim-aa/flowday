@@ -13,7 +13,7 @@ from .days import (
     generate_timeline,
     history_frame,
 )
-from .execute import DayOutcome, Observer, Planner, TrustPlanner, simulate_day
+from .execute import DayOutcome, Observer, Planner, TrustPlanner, simulate_day, simulate_days
 from .profiles import TASK_TYPES, TypeSpec, UserProfile, sample_users, tod_shape
 
 __all__ = [
@@ -34,5 +34,6 @@ __all__ = [
     "history_frame",
     "sample_users",
     "simulate_day",
+    "simulate_days",
     "tod_shape",
 ]

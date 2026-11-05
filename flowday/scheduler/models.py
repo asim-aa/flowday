@@ -35,7 +35,8 @@ class Task:
     `estimated_minutes` is what the user said. `planned_minutes` is what the scheduler
     should reserve; an estimator layer fills it in, otherwise the user's estimate is used.
     `release` is the earliest minute the task may start (None = any time); recurring routines
-    use it so that one day's instance is never planned on an earlier day.
+    use it so that one day's instance is never planned on an earlier day. `carried` counts how many
+    days the task has already been carried over unfinished (see `carry_over`).
     """
 
     id: str
@@ -46,10 +47,13 @@ class Task:
     planned_minutes: int | None = None
     title: str = ""
     release: int | None = None
+    carried: int = 0
 
     def __post_init__(self) -> None:
         if self.estimated_minutes <= 0:
             raise ValueError(f"task {self.id!r}: estimated_minutes must be positive")
+        if self.carried < 0:
+            raise ValueError(f"task {self.id!r}: carried must be non-negative")
         if self.planned_minutes is not None and self.planned_minutes <= 0:
             raise ValueError(f"task {self.id!r}: planned_minutes must be positive")
 
