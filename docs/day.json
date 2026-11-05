@@ -1,0 +1,186 @@
+{
+ "window": [
+  540,
+  1080
+ ],
+ "events": [
+  {
+   "title": "Team standup",
+   "start": 540,
+   "end": 570
+  },
+  {
+   "title": "Lunch",
+   "start": 720,
+   "end": 780
+  },
+  {
+   "title": "1:1 with manager",
+   "start": 840,
+   "end": 870
+  }
+ ],
+ "plans": {
+  "trust": {
+   "label": "Trusting your estimates",
+   "placed": [
+    {
+     "title": "Prep for 1:1",
+     "type": "meeting_prep",
+     "start": 570,
+     "end": 600,
+     "estimate": 30,
+     "deadline": 830
+    },
+    {
+     "title": "Write project proposal",
+     "type": "writing",
+     "start": 600,
+     "end": 660,
+     "estimate": 60,
+     "deadline": 900
+    },
+    {
+     "title": "Fix login bug",
+     "type": "coding",
+     "start": 660,
+     "end": 720,
+     "estimate": 60,
+     "deadline": 1020
+    },
+    {
+     "title": "Reply to emails",
+     "type": "email",
+     "start": 780,
+     "end": 800,
+     "estimate": 20,
+     "deadline": null
+    },
+    {
+     "title": "Study",
+     "type": "study",
+     "start": 870,
+     "end": 930,
+     "estimate": 60,
+     "deadline": null
+    },
+    {
+     "title": "Expense report",
+     "type": "admin",
+     "start": 930,
+     "end": 955,
+     "estimate": 25,
+     "deadline": null
+    }
+   ],
+   "dropped": []
+  },
+  "gbm": {
+   "label": "ML, median",
+   "placed": [
+    {
+     "title": "Prep for 1:1",
+     "type": "meeting_prep",
+     "start": 570,
+     "end": 605,
+     "estimate": 30,
+     "deadline": 830
+    },
+    {
+     "title": "Write project proposal",
+     "type": "writing",
+     "start": 605,
+     "end": 698,
+     "estimate": 60,
+     "deadline": 900
+    },
+    {
+     "title": "Reply to emails",
+     "type": "email",
+     "start": 698,
+     "end": 718,
+     "estimate": 20,
+     "deadline": null
+    },
+    {
+     "title": "Expense report",
+     "type": "admin",
+     "start": 780,
+     "end": 808,
+     "estimate": 25,
+     "deadline": null
+    },
+    {
+     "title": "Fix login bug",
+     "type": "coding",
+     "start": 870,
+     "end": 981,
+     "estimate": 60,
+     "deadline": 1020
+    },
+    {
+     "title": "Study",
+     "type": "study",
+     "start": 981,
+     "end": 1070,
+     "estimate": 60,
+     "deadline": null
+    }
+   ],
+   "dropped": []
+  },
+  "gbm_q80": {
+   "label": "ML, cautious (80th percentile)",
+   "placed": [
+    {
+     "title": "Write project proposal",
+     "type": "writing",
+     "start": 570,
+     "end": 689,
+     "estimate": 60,
+     "deadline": 900
+    },
+    {
+     "title": "Prep for 1:1",
+     "type": "meeting_prep",
+     "start": 780,
+     "end": 824,
+     "estimate": 30,
+     "deadline": 830
+    },
+    {
+     "title": "Fix login bug",
+     "type": "coding",
+     "start": 870,
+     "end": 1008,
+     "estimate": 60,
+     "deadline": 1020
+    },
+    {
+     "title": "Reply to emails",
+     "type": "email",
+     "start": 1008,
+     "end": 1033,
+     "estimate": 20,
+     "deadline": null
+    },
+    {
+     "title": "Expense report",
+     "type": "admin",
+     "start": 1033,
+     "end": 1067,
+     "estimate": 25,
+     "deadline": null
+    }
+   ],
+   "dropped": [
+    {
+     "title": "Study",
+     "reserved": 98,
+     "reason": "capacity",
+     "detail": "no room alongside higher-priority tasks (Fix login bug, Prep for 1:1, Reply to emails, Write project proposal)"
+    }
+   ]
+  }
+ }
+}

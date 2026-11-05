@@ -1,0 +1,579 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlowDay</title>
+<meta name="description" content="An ML-informed daily scheduler: a deterministic planner plus a learned duration estimator, evaluated end to end on synthetic data, with the limits stated up front.">
+<meta property="og:title" content="FlowDay">
+<meta property="og:description" content="Trusted estimates over-promise. A learned estimate behind a deterministic scheduler fixes much of it, on synthetic data, and the page says exactly what that does and does not show.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a78d6'/%3E%3Crect x='6' y='8' width='13' height='4' rx='2' fill='white'/%3E%3Crect x='11' y='14' width='15' height='4' rx='2' fill='white' opacity='.8'/%3E%3Crect x='8' y='20' width='10' height='4' rx='2' fill='white' opacity='.6'/%3E%3C/svg%3E">
+<!-- Numbers on this page are copied by hand from README.md and reports/*.json. Change them together.
+     docs/day.json comes from scripts/make_site_data.py; figures from `make site`. The sentence under the hero
+     (".takeaway") describes what is in day.json: re-read it whenever day.json is regenerated. -->
+<script>
+  // set the theme before first paint so there is no flash
+  try { const t = localStorage.getItem("flowday-theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
+<style>
+  :root {
+    --bg: #fafaf8; --surface: #ffffff; --text: #1f1f1e; --muted: #5f5e5a; --border: #e4e2dc;
+    --accent: #2a78d6; --accent-strong: #1f66bd; --on-accent: #ffffff;
+    --trust: #c9541a; --ml: #2a78d6; --ml2: #1b4f9c; --neutral: #8a877f;
+    --event: #cfcbc1; --warn-bg: #fff6e0; --warn-border: #e8c26a; --code-bg: #f1efe9;
+    --shadow: 0 1px 2px rgba(30, 30, 20, .06), 0 10px 28px rgba(30, 30, 20, .06);
+    --glow: rgba(42, 120, 214, .13);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #151514; --surface: #1d1d1b; --text: #ecebe6; --muted: #a3a29b; --border: #33332f;
+      --accent: #5a9ff0; --accent-strong: #5a9ff0; --on-accent: #0d1117;
+      --trust: #f08a5d; --ml: #5a9ff0; --ml2: #a9cdf8; --neutral: #8f8c84;
+      --event: #4a4944; --warn-bg: #2a2412; --warn-border: #6b5a22; --code-bg: #24241f;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 28px rgba(0, 0, 0, .25); --glow: rgba(90, 159, 240, .14);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #151514; --surface: #1d1d1b; --text: #ecebe6; --muted: #a3a29b; --border: #33332f;
+    --accent: #5a9ff0; --accent-strong: #5a9ff0; --on-accent: #0d1117;
+    --trust: #f08a5d; --ml: #5a9ff0; --ml2: #a9cdf8; --neutral: #8f8c84;
+    --event: #4a4944; --warn-bg: #2a2412; --warn-border: #6b5a22; --code-bg: #24241f;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 10px 28px rgba(0, 0, 0, .25); --glow: rgba(90, 159, 240, .14);
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; scroll-padding-top: 72px; }
+  @media (prefers-reduced-motion: no-preference) { html { scroll-behavior: smooth; } }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.62 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { width: min(100% - 32px, 800px); margin: 0 auto; }
+  .wide { width: min(100% - 32px, 960px); margin: 0 auto; }
+  a { color: var(--accent-strong); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+  /* top bar */
+  .topbar {
+    position: sticky; top: 0; z-index: 10; background: var(--bg);
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border);
+  }
+  .topbar .wide { display: flex; align-items: center; gap: 18px; height: 56px; }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 700; color: var(--text); text-decoration: none; letter-spacing: -0.01em; }
+  .brand svg { width: 24px; height: 24px; }
+  .topbar nav { display: flex; gap: 4px; margin-left: auto; }
+  .topbar nav a { color: var(--muted); text-decoration: none; font-size: 0.93rem; padding: 6px 10px; border-radius: 8px; }
+  .topbar nav a:hover { color: var(--text); background: var(--border); }
+  .icon-btn {
+    font: inherit; font-size: 0.9rem; color: var(--text); background: transparent; border: 1px solid var(--border);
+    border-radius: 8px; padding: 5px 11px; cursor: pointer; text-decoration: none; line-height: 1.5;
+  }
+  .icon-btn:hover { background: var(--border); }
+  @media (max-width: 640px) { .topbar nav a { display: none; } .topbar nav { margin-left: auto; } }
+
+  /* hero */
+  .hero { background: radial-gradient(900px 340px at 18% -8%, var(--glow), transparent 70%); padding: 56px 0 8px; }
+  .eyebrow {
+    display: inline-block; font-size: 0.8rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--accent-strong); border: 1px solid var(--border); background: var(--surface); border-radius: 999px; padding: 3px 12px; margin-bottom: 16px;
+  }
+  h1 { font-size: clamp(2.2rem, 6.4vw, 3.5rem); line-height: 1.06; margin: 0 0 16px; letter-spacing: -0.03em; max-width: 16em; }
+  h1 em { font-style: normal; color: var(--accent-strong); }
+  h2 { font-size: 1.6rem; line-height: 1.2; margin: 0 0 10px; letter-spacing: -0.015em; }
+  h2 .n { display: block; font-size: 0.78rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+  h3 { font-size: 1.05rem; margin: 0 0 6px; }
+  section { padding: 56px 0 0; }
+  p { margin: 0 0 16px; }
+  .lede { font-size: 1.22rem; color: var(--muted); max-width: 34em; margin-bottom: 22px; }
+  .links { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 8px; }
+  .btn { display: inline-block; padding: 10px 18px; border-radius: 10px; text-decoration: none; font-weight: 600; border: 1px solid var(--accent-strong); color: var(--accent-strong); background: transparent; }
+  .btn:hover { background: var(--glow); }
+  .btn.primary { background: var(--accent-strong); color: var(--on-accent); }
+  .btn.primary:hover { filter: brightness(1.08); }
+  .notice { background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 12px; padding: 14px 16px; margin: 24px 0 0; font-size: 0.96rem; }
+  .notice strong { display: block; margin-bottom: 2px; }
+
+  /* cards */
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; box-shadow: var(--shadow); }
+  .pad { padding: 18px 20px; }
+  .scroll { overflow-x: auto; }
+
+  /* hero timeline: one row per task, fixed events as hatched bands behind each plan */
+  .day { margin-top: 36px; padding: 18px 20px 14px; }
+  .day h2 { font-size: 1.15rem; margin: 0 0 2px; letter-spacing: -0.01em; }
+  .day .sub { color: var(--muted); font-size: 0.93rem; margin-bottom: 14px; }
+  .tl { min-width: 660px; --label: 168px; }
+  .axis { position: relative; height: 18px; margin: 0 0 2px var(--label); font-size: 0.74rem; color: var(--muted); }
+  .axis span { position: absolute; transform: translateX(-50%); }
+  .axis span:first-child { transform: none; }
+  .axis span:last-child { transform: translateX(-100%); }
+  .lane { margin-bottom: 18px; }
+  .lane-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 2px 12px; margin-bottom: 4px; padding-bottom: 4px; border-bottom: 2px solid var(--lane); }
+  .lane-head b { font-size: 0.97rem; }
+  .lane-head .stat { color: var(--muted); font-size: 0.84rem; font-variant-numeric: tabular-nums; }
+  .gantt { position: relative; }
+  .cols { position: absolute; top: 0; bottom: 0; left: var(--label); right: 0; pointer-events: none;
+    background-image: repeating-linear-gradient(90deg, var(--border) 0 1px, transparent 1px calc(100% / 9)); }
+  .cols .evt { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(135deg, var(--event) 0 4px, transparent 4px 8px); border-left: 1px solid var(--event); border-right: 1px solid var(--event); opacity: .85; }
+  .grow { position: relative; display: grid; grid-template-columns: var(--label) 1fr; align-items: center; height: 26px; }
+  .gl { font-size: 0.84rem; padding-right: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .gt { position: relative; height: 26px; }
+  .gt .bar { position: absolute; top: 6px; height: 14px; border-radius: 4px; overflow: hidden; display: flex; background: color-mix(in srgb, var(--lane) 18%, var(--surface)); border: 1px solid var(--lane); }
+  .gt .bar .est { background: var(--lane); }
+  .gt .bar .add { flex: 1; background: repeating-linear-gradient(135deg, var(--lane) 0 2px, transparent 2px 5px); }
+  .gt .mins { position: absolute; top: 3px; font-size: 0.76rem; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .gt .mins b { color: var(--text); font-weight: 600; }
+  .grow.drop .gl { color: var(--text); text-decoration: line-through; text-decoration-color: var(--trust); }
+  .grow.drop .gt span { position: absolute; left: 4px; top: 1px; font-size: 0.78rem; color: var(--text); background: var(--warn-bg); border: 1px solid var(--warn-border); border-radius: 6px; padding: 1px 8px; white-space: nowrap; }
+  .legend { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.82rem; color: var(--muted); margin-top: 4px; }
+  .legend span { display: inline-flex; align-items: center; gap: 7px; }
+  .legend i { display: inline-block; width: 22px; height: 10px; border-radius: 3px; }
+  .legend .k-est { background: var(--ml); }
+  .legend .k-add { background: repeating-linear-gradient(135deg, var(--ml) 0 2px, transparent 2px 5px); border: 1px solid var(--ml); }
+  .legend .k-evt { background: repeating-linear-gradient(135deg, var(--event) 0 3px, transparent 3px 6px); border: 1px solid var(--event); }
+  .takeaway { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--border); font-size: 0.97rem; }
+
+  /* stat tiles */
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin: 24px 0 4px; }
+  .tile { padding: 16px 18px 14px; }
+  .tile .what { color: var(--muted); font-size: 0.86rem; margin-bottom: 4px; }
+  .tile .big { font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; font-variant-numeric: tabular-nums; }
+  .tile .big small { font-size: 0.85rem; font-weight: 500; color: var(--muted); margin-left: 2px; }
+  .tile .pair { margin-top: 12px; display: grid; gap: 5px; }
+  .pair .r { display: grid; grid-template-columns: 3.2em 1fr 3.4em; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .pair .r b { color: var(--text); font-weight: 600; text-align: right; }
+  .pair .t { position: relative; height: 8px; background: var(--border); border-radius: 4px; }
+  .pair .t i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: var(--c); width: var(--w); }
+  .pair .t u { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--text); left: var(--w); border-radius: 1px; }
+  .tile.cost { border-style: dashed; }
+  .tile .foot { margin-top: 8px; font-size: 0.78rem; color: var(--muted); }
+
+  /* steps */
+  ol.steps { padding-left: 0; list-style: none; counter-reset: s; margin: 24px 0 8px; position: relative; }
+  ol.steps::before { content: ""; position: absolute; left: 13.5px; top: 6px; bottom: 26px; width: 2px; background: var(--border); }
+  ol.steps li { counter-increment: s; position: relative; padding: 0 0 20px 46px; }
+  ol.steps li::before {
+    content: counter(s); position: absolute; left: 0; top: 0; width: 29px; height: 29px; border-radius: 50%;
+    background: var(--accent-strong); color: var(--on-accent); font-weight: 700; font-size: 0.88rem; display: grid; place-items: center;
+    box-shadow: 0 0 0 4px var(--bg);
+  }
+  ol.steps b { display: block; font-size: 1.03rem; }
+
+  /* diagrams */
+  figure { margin: 22px 0; }
+  figure svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  .diagram { padding: 18px; overflow-x: auto; }
+  figcaption { color: var(--muted); font-size: 0.88rem; margin-top: 8px; text-align: center; }
+
+  /* evidence */
+  .panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; margin: 18px 0; }
+  .panel { padding: 16px 18px 14px; }
+  .panel h3 { margin-bottom: 0; }
+  .panel .note { color: var(--muted); font-size: 0.82rem; margin-bottom: 10px; }
+  .row { display: grid; grid-template-columns: 7.6em 1fr 3.4em; align-items: center; gap: 10px; font-size: 0.84rem; margin: 6px 0; }
+  .row .name { color: var(--text); }
+  .row .track2 { height: 12px; background: var(--border); border-radius: 6px; position: relative; }
+  .row .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 6px; background: var(--c); }
+  .row .fill.oracle { background: transparent; border: 1.5px dashed var(--muted); }
+  .row .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); }
+  .row.hl .name, .row.hl .val { color: var(--text); font-weight: 600; }
+  .plate { background: #fff; padding: 12px; border-radius: 16px; border: 1px solid var(--border); box-shadow: var(--shadow); }
+  .plate img { display: block; width: 100%; height: auto; }
+  details { margin: 12px 0; }
+  summary { cursor: pointer; color: var(--accent-strong); font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.9rem; font-variant-numeric: tabular-nums; }
+  th, td { padding: 8px 12px; text-align: right; white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border); }
+  tbody tr + tr td { border-top: 1px solid var(--border); }
+
+  /* limits */
+  .limits { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; margin-top: 18px; }
+  .limit { padding: 16px 18px; border-left: 4px solid var(--warn-border); }
+  .limit h3 { font-size: 1rem; }
+  .limit p { margin: 0; font-size: 0.95rem; color: var(--muted); }
+  .limit p b { color: var(--text); }
+
+  /* run it */
+  .code { position: relative; }
+  pre { background: var(--code-bg); padding: 16px 18px; border-radius: 12px; overflow-x: auto; margin: 0 0 14px; border: 1px solid var(--border); }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.88em; }
+  code { background: var(--code-bg); padding: 1px 6px; border-radius: 5px; }
+  pre code { background: none; padding: 0; }
+  .copy { position: absolute; top: 10px; right: 10px; font-size: 0.78rem; padding: 3px 10px; }
+  ul { padding-left: 22px; margin: 0 0 16px; }
+  li { margin-bottom: 8px; }
+  footer { margin: 72px 0 0; padding: 22px 0 56px; border-top: 1px solid var(--border); color: var(--muted); font-size: 0.92rem; }
+</style>
+</head>
+<body id="top">
+
+<div class="topbar">
+  <div class="wide">
+    <a class="brand" href="#top"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="var(--accent)"/><rect x="6" y="8" width="13" height="4" rx="2" fill="var(--on-accent)"/><rect x="11" y="14" width="15" height="4" rx="2" fill="var(--on-accent)" opacity=".8"/><rect x="8" y="20" width="10" height="4" rx="2" fill="var(--on-accent)" opacity=".6"/></svg>FlowDay</a>
+    <nav aria-label="Sections">
+      <a href="#idea">The idea</a><a href="#evidence">Evidence</a><a href="#limits">Limits</a><a href="#run-it">Run it</a>
+    </nav>
+    <a class="icon-btn" href="https://github.com/asim-aa/flowday">GitHub</a>
+    <button class="icon-btn" id="theme" type="button" aria-label="Switch between light and dark">Theme</button>
+  </div>
+</div>
+
+<header class="hero">
+  <div class="wide">
+    <span class="eyebrow">Synthetic-data study</span>
+    <h1>A planner that learns how long your tasks <em>really</em> take</h1>
+    <p class="lede">A deterministic scheduler, a learned duration estimator in front of it, and an honest account of what that does and does not show.</p>
+    <div class="links">
+      <a class="btn primary" href="https://github.com/asim-aa/flowday">Code on GitHub</a>
+      <a class="btn" href="https://github.com/asim-aa/flowday#readme">Full write-up</a>
+      <a class="btn" href="#run-it">Run it</a>
+    </div>
+    <div class="notice" role="note">
+      <strong>Everything about people here is synthetic.</strong>
+      The users, histories and every number on this page come from a simulator I wrote. The results show how the method behaves
+      <em>when its assumptions hold</em>. They are not evidence that it would help real people.
+    </div>
+
+    <div class="card day">
+      <h2>One day, three plans</h2>
+      <p class="sub">The app's default events and tasks (recurring routines left out), planned for a brand-new user. This is only what the scheduler reserves; nothing is simulated.</p>
+      <div class="scroll"><div class="tl" id="timeline" aria-live="polite">Loading the plans…</div></div>
+      <div class="legend" aria-hidden="true">
+        <span><i class="k-est"></i>your estimate</span>
+        <span><i class="k-add"></i>time the model adds</span>
+        <span><i class="k-evt"></i>fixed event (band)</span>
+      </div>
+      <p class="sub" id="events" style="margin:6px 0 0"></p>
+      <p class="takeaway">Trusting the estimate fits everything back to back, on paper. The ML median plan keeps all six tasks but reserves far more for the ones people underestimate: the login bug gets 111 minutes against the 60 you said, the proposal 93. The cautious plan reserves more again, so it has to leave out Study, and says why. That is the trade the numbers below measure.</p>
+    </div>
+  </div>
+</header>
+
+<main>
+<section aria-labelledby="claim">
+  <div class="wide">
+    <h2 id="claim"><span class="n">The claim</span>Better durations make better days, and it costs something</h2>
+    <p style="max-width:40em">People plan from their own estimates, and those are biased low, so a planner that believes them over-promises. In the simulator, per day, against trusting the user:</p>
+    <div class="tiles">
+      <div class="card tile">
+        <div class="what">Deadlines missed</div>
+        <div class="big">0.17 → 0.05</div>
+        <div class="pair">
+          <div class="r">Trust<span class="t"><i style="--c:var(--trust);--w:100%"></i></span><b>0.17</b></div>
+          <div class="r">ML<span class="t"><i style="--c:var(--ml);--w:29.4%"></i></span><b>0.05</b></div>
+        </div>
+      </div>
+      <div class="card tile">
+        <div class="what">Minutes spilling into fixed events</div>
+        <div class="big">11.2 → 2.6<small>min</small></div>
+        <div class="pair">
+          <div class="r">Trust<span class="t"><i style="--c:var(--trust);--w:100%"></i></span><b>11.2</b></div>
+          <div class="r">ML<span class="t"><i style="--c:var(--ml);--w:23.2%"></i></span><b>2.6</b></div>
+        </div>
+      </div>
+      <div class="card tile">
+        <div class="what">Duration error (MAE)</div>
+        <div class="big">23.1 → 11.7<small>min</small></div>
+        <div class="pair">
+          <div class="r">Trust<span class="t"><i style="--c:var(--trust);--w:100%"></i></span><b>23.1</b></div>
+          <div class="r">ML<span class="t"><i style="--c:var(--ml);--w:50.6%"></i><u style="--w:48.9%" title="noise floor 11.3"></u></span><b>11.7</b></div>
+        </div>
+        <div class="foot">The tick is the noise floor, 11.3 min.</div>
+      </div>
+      <div class="card tile cost">
+        <div class="what">Tasks completed: the price</div>
+        <div class="big">5.28 → 5.07</div>
+        <div class="pair">
+          <div class="r">Trust<span class="t"><i style="--c:var(--trust);--w:100%"></i></span><b>5.28</b></div>
+          <div class="r">ML<span class="t"><i style="--c:var(--ml);--w:96%"></i></span><b>5.07</b></div>
+        </div>
+        <div class="foot">Trusting completes the most, by over-committing.</div>
+      </div>
+    </div>
+    <p style="max-width:40em;margin-top:18px">The last tile is the honest one. Trusting the user finishes the <em>most</em> tasks by over-committing and then spilling into meetings, working overtime and missing deadlines. ML planning drops about 0.2 more tasks a day up front, with a reason, instead of failing them later. Whether that trade is right depends on what an overrun costs a person, which this study cannot measure.</p>
+  </div>
+</section>
+
+<section aria-labelledby="idea">
+  <div class="wrap">
+    <h2 id="idea"><span class="n">How I got here</span>The idea in seven steps</h2>
+    <p>Each step is a question. The next step exists because the previous one answered it or exposed a weak spot.</p>
+    <figure><div class="card diagram" id="fig-steps" role="img" aria-label="Flowchart of the seven steps, from the claim to the audit of my own work"></div></figure>
+    <ol class="steps">
+      <li><b>Is the claim even true?</b>People plan from biased estimates, so a planner that believes them should over-promise. Everything is measured against that baseline, "trust the user".</li>
+      <li><b>How do I make the comparison fair?</b>Split the system: a deterministic scheduler with no ML, tested hard, and a swappable estimator that only hands it minutes per task. Then the estimator is the only thing that changes between plans.</li>
+      <li><b>Where does data come from?</b>There is none that is real, so a documented bias model (task type, size, time of day, a personal offset, noise) generates labelled synthetic days. Every estimator sees the same days and the same hidden noise.</li>
+      <li><b>How much of the bias can be learned?</b>Three baselines, then gradient boosting with past-only history features, split by user. Against a noise floor of 11.3 minutes the model scores 11.7 and trusting the user 23.1. The per-type median (14.6) is a strong baseline.</li>
+      <li><b>Does a better number make a better day?</b>Run the scheduler inside the simulator, let tasks take their true duration, replan on overruns. Yes, at the cost above.</li>
+      <li><b>What did that expose?</b>Each weak spot became the next piece of work: idle time led to reclaiming early finishes; that moved about seven start times a day, which led to a minimum-gain threshold; quantiles that fail for new users led to a distribution-shift test; "I only varied my own parameters" led to heavy-tailed and drifting-habit worlds; changing habits led to a drift check.</li>
+      <li><b>Can I trust my own work?</b>I audited it. The validator had silently lost four checks and the baselines took a median on the wrong scale. Both are fixed and disclosed instead of quietly corrected.</li>
+    </ol>
+  </div>
+</section>
+
+<section aria-labelledby="how">
+  <div class="wrap">
+    <h2 id="how"><span class="n">Mechanics</span>How it works</h2>
+    <p>The scheduler only ever sees a number of minutes per task. Swapping the estimator is therefore the whole experiment.</p>
+    <figure><div class="card diagram" id="fig-loop" role="img" aria-label="Estimator feeds minutes per task to the scheduler, which makes a plan; the day happens, overruns trigger a replan, and measured durations go to an event log that retrains the estimator"></div></figure>
+    <ul>
+      <li><b>Scheduler.</b> Admits tasks in priority order, but only if everything admitted so far can still be sequenced with every deadline met (an exact search with a node budget). Anything else is dropped with a reason. Fixed events and finished work never move. It is checked against a brute-force oracle and by injecting nine bugs; eight are caught and the ninth is an equivalent mutant.</li>
+      <li><b>Estimators.</b> Trust the user, one global multiplier, a per-type median, and gradient boosting for the median and the 80th percentile. The planning percentile is a dial: higher means fewer overruns and more dropped tasks.</li>
+      <li><b>Evaluation.</b> Same synthetic days and hidden noise for every estimator, so differences are paired. Intervals come from resampling whole users, because one user's days are correlated.</li>
+    </ul>
+    <figure><div class="card diagram" id="fig-eval" role="img" aria-label="Evaluation design: one synthetic day is planned by each estimator, lived with true durations, and scored on paired metrics"></div></figure>
+  </div>
+</section>
+
+<section aria-labelledby="evidence">
+  <div class="wide">
+    <h2 id="evidence"><span class="n">Results</span>What the evidence shows</h2>
+    <p style="max-width:40em">Per simulated day, 100 unseen users over 30 days each, early finishes not reclaimed. Oracle (dashed) knows the true durations and is an unreachable reference.</p>
+    <div class="panels" id="panels"></div>
+    <details>
+      <summary>Show the numbers as a table</summary>
+      <div class="card scroll" style="margin-top:10px"><table>
+        <thead><tr><th>Estimator</th><th>Deadlines missed</th><th>Replans</th><th>Tasks dropped</th><th>Min spilling into events</th><th>Tasks completed</th></tr></thead>
+        <tbody>
+          <tr><td>Trust the user</td><td>0.17</td><td>3.54</td><td>0.77</td><td>11.2</td><td>5.28</td></tr>
+          <tr><td>Global multiplier</td><td>0.11</td><td>2.16</td><td>0.95</td><td>6.6</td><td>5.09</td></tr>
+          <tr><td>Per-type median</td><td>0.06</td><td>2.13</td><td>1.02</td><td>3.4</td><td>5.03</td></tr>
+          <tr><td>ML (median)</td><td>0.05</td><td>2.39</td><td>0.98</td><td>2.6</td><td>5.07</td></tr>
+          <tr><td>ML, cautious (80th pct)</td><td>0.02</td><td>0.84</td><td>1.25</td><td>0.9</td><td>4.80</td></tr>
+          <tr><td>Oracle (true durations)</td><td>0.00</td><td>0.02</td><td>0.91</td><td>0.0</td><td>5.14</td></tr>
+        </tbody>
+      </table></div>
+      <p style="color:var(--muted);font-size:0.88rem;margin-top:8px">Confidence intervals, paired differences and the reclaim-early variant are in the <a href="https://github.com/asim-aa/flowday#end-to-end-evaluation">full write-up</a>.</p>
+    </details>
+    <ul style="max-width:42em;margin-top:18px">
+      <li><b>The per-type median is a strong baseline.</b> It is within noise of the model on missed deadlines. The model's clear edge is overtime and per-task accuracy.</li>
+      <li><b>There is no free point on the caution curve.</b> Each step up the planning percentile buys fewer misses and replans and costs more dropped tasks.</li>
+    </ul>
+    <figure class="plate"><img src="figures/fig4_caution_frontier.png" alt="Line charts of outcomes as the planning percentile rises from the 50th to the 90th, with and without reclaiming early finishes" loading="lazy" width="1800" height="690"><figcaption style="color:#5f5e5a">The price of caution: outcomes as the planning percentile rises, with and without reclaiming early finishes.</figcaption></figure>
+  </div>
+</section>
+
+<section aria-labelledby="limits">
+  <div class="wide">
+    <h2 id="limits"><span class="n">Honest limits</span>What this does not prove</h2>
+    <div class="limits">
+      <div class="card limit"><h3>The model was told the answer's shape</h3><p>The generator is log-linear in features the estimator is given. Recovering it shows the pipeline works, <b>not that human durations are this learnable.</b></p></div>
+      <div class="card limit"><h3>The biases are my assumptions</h3><p>Loosely inspired by the planning-fallacy literature, <b>not measured</b> from anyone.</p></div>
+      <div class="card limit"><h3>Calibration breaks under shift</h3><p>For new users who underestimate more than anyone in training, 80th-percentile coverage is <b>0.68 in week one</b>. Anchoring on the user's history lifts it only to 0.72, because 14% of first-week tasks have no history. I tried it and did not adopt it.</p></div>
+      <div class="card limit"><h3>Robustness is shown for mild departures only</h3><p>Seeds, noise and bias change the size of the gains, not their direction. Heavy tails and steadily drifting habits do not break it, but both are still log-linear plus noise. <b>Abrupt changes, interdependent tasks and a user who reacts to the planner were not tried.</b></p></div>
+      <div class="card limit"><h3>One day at a time</h3><p>No experiment evaluates a multi-day horizon, and the scheduler has no task splitting or dependencies.</p></div>
+      <div class="card limit"><h3>Caution can leave work out</h3><p>The cautious plan at the top drops Study. And because tasks cannot be split, a long reservation can leave <b>no gap that fits at all</b>, even for a high-priority task. The planner says so and why; it does not fix it.</p></div>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="checked">
+  <div class="wrap">
+    <h2 id="checked"><span class="n">Verification</span>How I checked my own work</h2>
+    <ul>
+      <li>211 tests with property-based checks against a brute-force oracle; strict type checking; about 96% line coverage; CI on Python 3.11 to 3.13.</li>
+      <li>Reports regenerate byte for byte from a fixed seed.</li>
+      <li>Mistakes the checks found are listed, not hidden: the validator that had silently lost four checks, a median taken on the wrong scale, a routine that could be planned a day early.</li>
+    </ul>
+  </div>
+</section>
+
+<section aria-labelledby="run-it">
+  <div class="wrap">
+    <h2 id="run-it"><span class="n">Try it</span>Run it</h2>
+    <p>You need <a href="https://docs.astral.sh/uv/">uv</a> and Python 3.11 or newer.</p>
+    <div class="code">
+      <button class="icon-btn copy" type="button" id="copy">Copy</button>
+<pre><code id="cmd">git clone https://github.com/asim-aa/flowday
+cd flowday
+make install
+make train     # synthetic data, tuned models (1 to 3 min)
+make app       # the Streamlit planner</code></pre>
+    </div>
+    <p>Enter fixed events and tasks, plan the day, then press "ran over by N minutes" and watch the rest replan. Switch between the baselines and the ML estimators, and slide how cautious the plan should be. Run locally, the app logs your real durations and can retrain on them after 60 measured completions.</p>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>FlowDay is MIT licensed. Code, tests and the full write-up are on <a href="https://github.com/asim-aa/flowday">GitHub</a>.
+    No auth, hosted database, payments or LLM, by design.</p>
+  </div>
+</footer>
+
+<noscript><div class="wrap"><div class="notice">The plans, charts and diagrams on this page need JavaScript. They are also in the <a href="https://github.com/asim-aa/flowday#readme">README</a>, where GitHub draws the diagrams.</div></div></noscript>
+
+<!-- Diagram sources: plain text, not parsed as HTML, so <br/> survives. -->
+<script type="text/x-mermaid" id="src-steps">
+flowchart TB
+    A["1 · Claim<br/>trusted estimates over-promise"] --> B["2 · Split the system<br/>deterministic scheduler<br/>+ swappable estimator"]
+    B --> C["3 · No real data<br/>labelled simulator,<br/>same days for every estimator"]
+    C --> D["4 · Learn durations<br/>3 baselines, then GBM<br/>point + quantiles"]
+    D --> E["5 · Test end to end<br/>scheduler inside the simulator,<br/>replan on overruns"]
+    E --> F["6 · Follow each weak spot<br/>idle time → reclaim → minimum gain<br/>new users → shift test<br/>own parameters → heavy tails, drift → drift check"]
+    F --> K["7 · Audit my own work<br/>bugs found, fixed and disclosed"]
+</script>
+<script type="text/x-mermaid" id="src-loop">
+flowchart TB
+    U["You<br/>tasks, your own estimates,<br/>fixed events, deadlines"]
+    H[("What your past tasks<br/>really took")]
+    E["Duration estimator (swappable)<br/>trust · multiplier · per-type median<br/>GBM q50 · GBM q80"]
+    S["Scheduler<br/>deterministic, no ML"]
+    P["Plan<br/>conflict-free; what does not fit<br/>is dropped with a reason"]
+    D(["The day happens"])
+    R["Replan<br/>fixed events and finished work never move"]
+    L[("Event log<br/>SQLite")]
+    U --> E
+    H --> E
+    E -->|"minutes per task"| S
+    S --> P
+    P --> D
+    D -->|"a task overruns<br/>or finishes early"| R
+    R --> P
+    D -->|"measured durations"| L
+    L -->|"retrain"| H
+</script>
+<script type="text/x-mermaid" id="src-eval">
+flowchart TB
+    G["Simulator: one synthetic day<br/>events, tasks, estimates,<br/>hidden noise drawn once per task"]
+    P1["Plan with<br/>trust"]
+    P2["Plan with<br/>per-type<br/>median"]
+    P3["Plan with<br/>GBM or<br/>GBM q80"]
+    P4["Plan with<br/>oracle (true<br/>durations)"]
+    X["Live the day: every task takes<br/>its TRUE duration<br/>overrun → replan<br/>early finish → optionally pull forward"]
+    M["Per-day metrics<br/>missed deadlines · replans · idle<br/>dropped · spill into events<br/>overtime · completed"]
+    C["Paired difference against trust,<br/>95% CI from resampling whole users"]
+    G --> P1 & P2 & P3 & P4
+    P1 & P2 & P3 & P4 --> X
+    X --> M --> C
+</script>
+
+<script type="module">
+  const root = document.documentElement;
+  const css = (name) => getComputedStyle(root).getPropertyValue(name).trim();
+  const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const hhmm = (m) => String(Math.floor(m / 60)).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
+  const isDark = () => (root.dataset.theme ? root.dataset.theme === "dark" : matchMedia("(prefers-color-scheme: dark)").matches);
+
+  /* theme toggle */
+  const themeBtn = document.getElementById("theme");
+  const labelTheme = () => { themeBtn.textContent = isDark() ? "☀ Light" : "☾ Dark"; };
+  labelTheme();
+  themeBtn.addEventListener("click", () => {
+    root.dataset.theme = isDark() ? "light" : "dark";
+    try { localStorage.setItem("flowday-theme", root.dataset.theme); } catch (e) {}
+    labelTheme();
+    window.drawDiagrams?.();
+  });
+
+  /* copy button */
+  const copyBtn = document.getElementById("copy");
+  copyBtn.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(document.getElementById("cmd").textContent); copyBtn.textContent = "Copied"; }
+    catch (e) { copyBtn.textContent = "Press ⌘/Ctrl+C"; }
+    setTimeout(() => { copyBtn.textContent = "Copy"; }, 1800);
+  });
+
+  /* evidence panels (numbers copied from README.md) */
+  const EST = [
+    ["Trust", "var(--trust)"], ["Multiplier", "var(--neutral)"], ["Per-type median", "var(--neutral)"],
+    ["ML median", "var(--ml)"], ["ML cautious", "var(--ml2)"], ["Oracle", null],
+  ];
+  const PANELS = [
+    ["Deadlines missed", "per day, lower is better", [0.17, 0.11, 0.06, 0.05, 0.02, 0.0], 2, [0, 3, 4]],
+    ["Minutes spilling into fixed events", "per day, lower is better", [11.2, 6.6, 3.4, 2.6, 0.9, 0.0], 1, [0, 3, 4]],
+    ["Tasks dropped", "per day: the cost of caution", [0.77, 0.95, 1.02, 0.98, 1.25, 0.91], 2, [0, 3, 4]],
+    ["Tasks completed", "per day: trusting the user finishes the most", [5.28, 5.09, 5.03, 5.07, 4.8, 5.14], 2, [0, 3, 4]],
+  ];
+  document.getElementById("panels").innerHTML = PANELS.map(([title, note, vals, digits, hl]) => {
+    const max = Math.max(...vals);
+    const rows = EST.map(([name, color], i) => {
+      const w = max ? (vals[i] / max) * 100 : 0;
+      const fill = color ? `style="width:${w}%;--c:${color}"` : `style="width:${w}%"`;
+      return `<div class="row${hl.includes(i) ? " hl" : ""}"><span class="name">${name}</span>` +
+        `<span class="track2"><span class="fill${color ? "" : " oracle"}" ${fill}></span></span>` +
+        `<span class="val">${vals[i].toFixed(digits)}</span></div>`;
+    }).join("");
+    return `<div class="card panel"><h3>${title}</h3><div class="note">${note}</div>${rows}</div>`;
+  }).join("");
+
+  /* mermaid, themed from the page's own colours */
+  import("https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.esm.min.mjs").then(({ default: mermaid }) => {
+    let serial = 0;
+    window.drawDiagrams = async () => {
+      mermaid.initialize({
+        startOnLoad: false, securityLevel: "strict", theme: "base",
+        themeVariables: {
+          background: css("--surface"), mainBkg: css("--surface"), primaryColor: css("--surface"),
+          primaryTextColor: css("--text"), textColor: css("--text"), primaryBorderColor: css("--accent"),
+          nodeBorder: css("--accent"), lineColor: css("--muted"), secondaryColor: css("--bg"), tertiaryColor: css("--bg"),
+          clusterBkg: css("--bg"), clusterBorder: css("--border"), edgeLabelBackground: css("--surface"),
+          fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif", fontSize: "15px",
+        },
+        flowchart: { useMaxWidth: true, htmlLabels: true, curve: "basis" },
+      });
+      for (const [src, target] of [["src-steps", "fig-steps"], ["src-loop", "fig-loop"], ["src-eval", "fig-eval"]]) {
+        const el = document.getElementById(target);
+        try {
+          const { svg } = await mermaid.render("m" + ++serial, document.getElementById(src).textContent.trim());
+          el.innerHTML = svg;
+          const drawn = el.querySelector("svg");
+          // on a phone, wide diagrams scroll sideways inside their card instead of shrinking to unreadable text
+          drawn.style.minWidth = Math.min(drawn.viewBox.baseVal.width, 520) + "px";
+        } catch (e) {
+          el.textContent = "The diagram could not be drawn here; it is in the README.";
+        }
+      }
+    };
+    window.drawDiagrams();
+  }).catch(() => {
+    for (const id of ["fig-steps", "fig-loop", "fig-eval"]) document.getElementById(id).textContent = "The diagrams need the Mermaid script, which did not load. They are in the README.";
+  });
+
+  /* the three real plans (docs/day.json, from scripts/make_site_data.py) */
+  const tl = document.getElementById("timeline");
+  try {
+    const day = await (await fetch("day.json")).json();
+    const [w0, w1] = day.window, span = w1 - w0, pct = (m) => ((m - w0) / span) * 100;
+    const LANES = { trust: "var(--trust)", gbm: "var(--ml)", gbm_q80: "var(--ml2)" };
+    const ticks = []; for (let h = Math.ceil(w0 / 60); h * 60 <= w1; h++) ticks.push(h);
+    const axis = `<div class="axis" aria-hidden="true">${ticks.map((h) => `<span style="left:${pct(h * 60)}%">${String(h).padStart(2, "0")}</span>`).join("")}</div>`;
+    const bands = day.events.map((e) => `<div class="evt" title="${esc(e.title)} ${hhmm(e.start)}-${hhmm(e.end)}" style="left:${pct(e.start)}%;width:${pct(e.end) - pct(e.start)}%"></div>`).join("");
+    const lanes = Object.entries(day.plans).map(([key, plan]) => {
+      const reserved = plan.placed.reduce((a, t) => a + (t.end - t.start), 0);
+      const rows = plan.placed.map((t) => {
+        const len = t.end - t.start, est = Math.min(t.estimate, len), left = pct(t.start), width = pct(t.end) - left;
+        const said = len !== t.estimate ? ` <span>(said ${t.estimate})</span>` : "";
+        return `<div class="grow"><span class="gl" title="${esc(t.title)}">${esc(t.title)}</span><div class="gt">` +
+          `<div class="bar" title="${esc(t.title)} ${hhmm(t.start)}-${hhmm(t.end)}; you said ${t.estimate} min, reserved ${len}" style="left:${left}%;width:${width}%">` +
+          `<span class="est" style="width:${(est / len) * 100}%"></span><span class="add"></span></div>` +
+          `<span class="mins" data-start="${left}" data-end="${left + width}"><b>${len}m</b>${said}</span></div></div>`;
+      }).join("");
+      const dropped = plan.dropped.map((d) => `<div class="grow drop"><span class="gl" title="${esc(d.title)}">${esc(d.title)}</span>` +
+        `<div class="gt"><span>not scheduled: ${esc(d.detail)}</span></div></div>`).join("");
+      return `<div class="lane" style="--lane:${LANES[key]}"><div class="lane-head"><b>${esc(plan.label)}</b>` +
+        `<span class="stat">${plan.placed.length} placed · ${plan.dropped.length} not scheduled · ${reserved} min reserved</span></div>` +
+        `<div class="gantt"><div class="cols">${bands}</div>${rows}${dropped}</div></div>`;
+    }).join("");
+    tl.innerHTML = axis + lanes;
+    // minutes go right of the bar when there is room, otherwise left of it
+    const place = () => {
+      const col = tl.getBoundingClientRect().width - parseFloat(getComputedStyle(tl).getPropertyValue("--label"));
+      tl.querySelectorAll(".mins").forEach((m) => {
+        const start = +m.dataset.start, end = +m.dataset.end;
+        const onLeft = ((100 - end) / 100) * col < m.offsetWidth + 10;
+        m.style.left = onLeft ? "auto" : `calc(${end}% + 6px)`;
+        m.style.right = onLeft ? `calc(${100 - start}% + 6px)` : "auto";
+      });
+    };
+    place(); new ResizeObserver(place).observe(tl);
+    document.getElementById("events").textContent = "Hatched bands are fixed events: " + day.events.map((e) => `${e.title} ${hhmm(e.start)}–${hhmm(e.end)}`).join(" · ") + ". Times are what the scheduler reserved, start to end.";
+  } catch (e) {
+    tl.textContent = "The plans load from day.json, which needs the page to be served over http (GitHub Pages does this).";
+  }
+</script>
+</body>
+</html>

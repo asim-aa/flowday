@@ -10,3 +10,6 @@ __pycache__/
 data/
 artifacts/
 *.db
+.coverage
+htmlcov/
+coverage.xml

@@ -8,6 +8,7 @@ dependencies = [
     "numpy>=1.26",
     "pandas>=2.2",
     "scikit-learn>=1.5",
+    "threadpoolctl>=3.5",
     "matplotlib>=3.8",
     "streamlit>=1.40",
 ]
@@ -19,6 +20,7 @@ dev = [
     "mypy>=1.11",
     "ruff>=0.6",
     "pandas-stubs",
+    "pytest-cov>=7.1.0",
 ]
 
 [build-system]
@@ -31,14 +33,23 @@ packages = ["flowday"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-filterwarnings = ["ignore::DeprecationWarning"]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore:unclosed database:ResourceWarning",  # throwaway in-memory EventLogs in tests
+]
 
 [tool.ruff]
-line-length = 100
+line-length = 110
 target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"flowday/evaluation/plots.py" = ["E501"]  # figure captions
+"flowday/app/main.py" = ["E501"]  # UI copy
+"flowday/evaluation/sensitivity.py" = ["E501"]  # report tables
+"tests/*" = ["E501"]  # SQL and expected-value literals
 
 [tool.mypy]
 python_version = "3.11"
@@ -46,6 +57,15 @@ strict = true
 warn_unused_ignores = true
 plugins = []
 
+# tests are type-checked, but untyped test functions are fine
 [[tool.mypy.overrides]]
-module = ["sklearn.*", "matplotlib.*", "joblib.*", "streamlit.*"]
+module = ["tests.*"]
+disallow_untyped_defs = false
+disallow_untyped_calls = false
+disallow_incomplete_defs = false
+disallow_any_generics = false
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["sklearn.*", "matplotlib.*", "joblib.*", "streamlit.*", "threadpoolctl.*"]
 ignore_missing_imports = true
