@@ -63,6 +63,20 @@ flowchart TB
     L -->|"retrain"| H
 ```
 
+### What a small user survey says, and what it does not
+
+Our group ran a five-question class survey (31 valid responses; exploratory, mostly classmates, so read it as
+a prompt for questions, not as evidence; the raw responses are not in this repository and the figures below
+are as reported in our survey deck). It points at two pains and one commercial fact:
+
+- **52%** carry unfinished tasks over to another day three or more times a week.
+- **42%** say their biggest scheduling challenge is deciding what to prioritize (the top answer).
+- **71%** would use only a free version.
+
+What the survey did **not** ask about is how long tasks take, which is the bet this repository's machine
+learning is built on. So the strongest evidence is for two things the project barely had: carrying work over
+and helping with priorities. Carry-over is now built and evaluated (below); a priority helper is not.
+
 ## The idea in seven steps
 
 This is the argument of the whole project, with the path I took to it. Each step is a question; the next
@@ -125,6 +139,7 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+.
 | `make mutation` | inject known bugs into the scheduler; every non-equivalent one must be caught | ~1 min |
 | `make train` | generate synthetic data, tune and train models, write `artifacts/` and `reports/model_metrics.json` | 1 to 3 min |
 | `make evaluate` | run the scheduler end to end with every estimator, early finishes not reclaimed and reclaimed; write `reports/` and figures | 2 to 4 min |
+| `make carry` | the multi-day run: unfinished tasks carried into the next day, with and without priority aging; writes `reports/schedule_results_carry*.md` | 4 to 6 min |
 | `make sensitivity` | feature ablation, generator sweep (seeds, noise, bias, heavy tails, drifting habits), the caution frontier, the reclaim threshold and the drift check | ~20 to 25 min |
 | `make figures` | regenerate the figures from the JSON reports | seconds |
 | `make app` | launch the Streamlit app (run `make train` first for the ML estimators) | |
@@ -165,7 +180,7 @@ Two separate things, both optional:
 ```
 flowday/
   scheduler/    deterministic core: Event, Task, Schedule, build_schedule, replan, complete,
-                expand_routines, validate_schedule. Standard library only.
+                expand_routines, carry_over, validate_schedule. Standard library only.
   simulator/    synthetic users, days and histories; simulate_day executes a plan with true durations
                 (optionally reclaiming early finishes) and measures how much each replan disturbs the day
   models/       features, 3 baselines, GBM point + quantile models, metrics, train CLI,
@@ -652,6 +667,49 @@ no free point on the curve, and the right one depends on what an overrun costs r
 which this simulation cannot say; that is why the app exposes it as a slider rather than choosing for the
 user.
 
+### Carrying unfinished tasks over to the next day
+
+Until now a task that did not fit was dropped, with a reason, and forgotten. `carry_over(schedule)` keeps it:
+every task that was not completed comes back for the next day one day older (`Task.carried`), without its
+deadline (that day has passed) and without a reserved duration (tomorrow's estimator sizes it afresh), and with
+its priority raised one step, capped at 5. Recurring-routine instances are not carried, since they recur on
+their own. All of those are design choices; none comes from data. The app has an **End the day** button that
+carries what is unfinished into tomorrow's plan, and `simulate_days` runs consecutive simulated days the same
+way (a carried task keeps its hidden noise, so it takes the same true time whenever it finally runs). A test
+checks that no task is ever lost across days: generated = completed + the backlog still waiting.
+
+`make carry` runs each test user's 30 evaluation days in sequence. The first thing to know is that the
+simulator's workload is about equal to a day's capacity (about 6 tasks arrive a day, 5.6 to 5.9 get done), so a
+carried backlog only grows, and its absolute size is an artifact of that, not a prediction (real people
+abandon, defer and re-plan; none of that is modelled). The comparison between estimators is what carries over:
+
+| Estimator | Tasks carried in per day | Tasks completed per day | Backlog on day 30 | Overtime min | Min spilling into events | Deadlines missed |
+|---|---|---|---|---|---|---|
+| Trust estimate | 2.99 | 5.90 | 4.36 | 11.9 | 16.1 | 0.13 |
+| Global multiplier | 4.83 | 5.82 | 6.78 | 8.5 | 10.2 | 0.05 |
+| Per-type median | 5.76 | 5.76 | 8.51 | 4.5 | 5.5 | 0.03 |
+| GBM (ML) | 5.67 | 5.76 | 8.56 | 2.6 | 4.6 | 0.03 |
+| GBM q80 (ML, cautious) | 8.82 | 5.56 | 14.62 | 0.9 | 1.5 | 0.01 |
+| Oracle (true durations) | 4.96 | 5.80 | 7.31 | 0.2 | 0.1 | 0.00 |
+
+(Confidence intervals are in `reports/schedule_results_carry.md`.)
+
+- **Carrying does not make caution free.** The cautious plan completes about 0.34 fewer tasks a day than trusting
+  the estimate (5.56 vs 5.90), and over 30 days that compounds into a backlog about three times as large (14.6
+  vs 4.4 tasks). The tasks it dropped up front are kept, not erased, and they are still not done.
+- **Trusting leads on throughput only by borrowing from the evening and the meetings.** It completes the most
+  (5.90, more than the oracle's 5.80) with 11.9 minutes of overtime and 16.1 minutes spilling into fixed events a
+  day, and 0.13 missed deadlines.
+- **On the survey's own measure, the machine learning does not help.** The pain the survey reports is carrying
+  work over, and here the ML plans carry *more* in per day than trusting does (5.7 and 8.8 vs 3.0). They trade
+  carry-over for reliability. Better duration estimates cannot create time; when the workload exceeds capacity,
+  what a planner can do is choose what waits, which is a prioritization problem, the survey's other finding.
+- **Priority aging is not shown to help.** The final backlog is lower with aging for the ML plans (GBM 8.6 vs
+  10.2, q80 14.6 vs 17.2) but the intervals overlap, and the "delay on tasks done" column rises with aging
+  because old tasks now finish at all (survivorship), so a higher number there is not worse. I have not measured
+  starvation directly. Aging stays the default because letting the oldest task wait forever is the failure a
+  user would notice, but that is a judgement, not a result (`reports/schedule_results_carry_noaging.md`).
+
 ## Event log
 
 `flowday/eventlog` writes plans, completions and actual durations to a local SQLite file (default
@@ -731,14 +789,15 @@ out; drop reasons showed internal task ids instead of titles).
 
 ## Tests and quality
 
-- **193 tests** (about 95% line coverage of the package, measured with `make coverage`): unit,
-  hypothesis property-based (scheduler, replanning, feature leakage, whole days of clicks through the app
-  session), headless Streamlit (including routines, early finishes, the caution slider and retraining on the
-  user's own log), a real v1 to v2 database migration, the CLIs, the figures, and a mini end-to-end check that
-  ML beats trusting the user on a small simulated population. Parallel and serial simulation are checked to
-  give identical results.
+- **211 tests** (about 96% line coverage of the package, measured with `make coverage`): unit,
+  hypothesis property-based (scheduler, replanning, carry-over, feature leakage, whole days of clicks through
+  the app session), headless Streamlit (including routines, early finishes, the caution slider, carrying tasks
+  into tomorrow and retraining on the user's own log), a real v1 to v2 database migration, the CLIs, the
+  figures, a check that no task is ever lost across simulated days, and a mini end-to-end check that ML beats
+  trusting the user on a small simulated population. Parallel and serial simulation, with and without
+  carry-over, are checked to give identical results.
 - `make check` runs `ruff`, **strict** `mypy` on the package, `mypy` on the tests (untyped test functions
-  allowed), and the tests. It is what CI runs on Python 3.11, 3.12 and 3.13. It passes (193 tests) in my
+  allowed), and the tests. It is what CI runs on Python 3.11, 3.12 and 3.13. It passes (211 tests) in my
   development environment on 3.13. On GitHub Actions (Linux, 3.11 to 3.13) it passed on the commits up to the
   README rewrite; the hosted-mode, project-page and later commits have not been through it yet, and the
   3.11 / 3.12 fresh-clone runs were done on an earlier commit. The first 3.11 run had failed type-checking on two lines because of different numpy stubs; that is
@@ -765,9 +824,11 @@ out; drop reasons showed internal task ids instead of titles).
   time but still moves start times; the threshold is a knee read off one sweep, not an optimum, and there is
   no "freeze the next hour" rule.
 - Non-preemptible tasks: an overrun cannot be split around a meeting; it collides instead.
-- The evaluation and experiments plan one day at a time. The scheduler supports multi-day windows and
-  routines (tested, including through the estimator planner) and the app applies routines to the chosen
-  weekday, but no experiment here evaluates a multi-day horizon.
+- Most experiments plan one day at a time. The carry-over run is the one multi-day experiment: it starts each
+  user with an empty backlog, has no abandonment or user response to a growing backlog, and its workload is
+  about equal to capacity by construction. Routines are tested across days but not evaluated over a horizon.
+- There is no priority helper. The survey's most common challenge is deciding what to prioritize; the only
+  prioritization here is the user's own 1 to 5 number plus the carry-over aging rule, which is untested on people.
 - History features are not updated from simulated executions during an evaluation day (they come from
   pre-generated history), which keeps estimators comparable but is not how a deployed system would learn.
 - The 80th percentile is one point on a measured frontier; nothing here chooses a quantile from the real
@@ -788,5 +849,6 @@ out; drop reasons showed internal task ids instead of titles).
 3. Give the model a recency-weighted view of a user's history (the history features are all-time means, so
    they lag when habits change), and act on the drift check (retrain, or fall back to a baseline).
 4. Task splitting and dependencies; user preferences for when to do which work.
-5. A multi-day evaluation with routines and tasks that carry over.
+5. A priority helper (the survey's top challenge), designed with the conjoint study before it is built, and
+   a carry-over model with abandonment so the backlog is not an artifact of the workload.
 6. Compare against an optimal solver (MILP / CP-SAT) on small instances to quantify the greedy gap.
