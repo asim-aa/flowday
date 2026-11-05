@@ -1,4 +1,4 @@
-.PHONY: site install test coverage mutation lint typecheck check train evaluate figures app all synth-log retrain-from-log sensitivity
+.PHONY: carry site install test coverage mutation lint typecheck check train evaluate figures app all synth-log retrain-from-log sensitivity
 
 install:
 	uv sync
@@ -29,6 +29,10 @@ train:
 # run the scheduler end to end in the simulator with every estimator; writes reports/ and figures
 evaluate:
 	uv run python -m flowday.evaluation.run
+
+# multi-day run: unfinished tasks carried into the next day, with and without priority aging (needs `make train`)
+carry:
+	uv run python -m flowday.evaluation.run --mode carry
 
 # ablation, generator sweep + seeds, and the caution frontier (takes ~15 minutes; needs `make train`)
 sensitivity:

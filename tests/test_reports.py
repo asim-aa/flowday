@@ -96,6 +96,51 @@ def test_evaluation_run_writes_reports_and_figures(trained, monkeypatch: pytest.
         assert data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) > 10_000, path
 
 
+def test_parallel_and_serial_carry_runs_give_identical_results(trained):
+    root, _ = trained
+    bundle = joblib.load(root / "artifacts" / "models.joblib")
+    ids = bundle["split"]["test"][:3]
+    args = (bundle["estimators"], bundle["config"], ids)
+    serial = run_simulations(*args, workers=1, carry=True)
+    parallel = run_simulations(*args, workers=2, carry=True)
+    key = ["user_id", "day", "estimator"]
+    pd.testing.assert_frame_equal(
+        serial.sort_values(key).reset_index(drop=True), parallel.sort_values(key).reset_index(drop=True)
+    )
+    # the first day starts with an empty backlog, and carrying only ever adds work
+    first = serial[serial["day"] == serial["day"].min()]
+    assert (first["carried_in"] == 0).all() and serial["carried_in"].sum() > 0
+
+
+def test_carry_run_writes_both_aging_variants_with_their_backlog_and_delay(
+    trained, monkeypatch: pytest.MonkeyPatch
+):
+    root, _ = trained
+    monkeypatch.setattr(run_mod, "ARTIFACT", root / "artifacts" / "models.joblib")
+    monkeypatch.setattr(run_mod, "REPORT_DIR", root / "reports")
+    monkeypatch.setattr(run_mod, "DATA_DIR", root / "data")
+    for aging, suffix in ((True, "_carry"), (False, "_carry_noaging")):
+        summary = run_mod.run_carry(workers=1, max_users=3, age_priority=aging)
+        assert summary["age_priority"] is aging and summary["synthetic"] is True
+        assert set(summary["backlog_end"]) == set(ESTIMATORS) == set(summary["delay_days_per_task_done"])
+        assert all(summary[n]["carried_in"]["mean"] >= 0 for n in ESTIMATORS)
+        saved = json.loads((root / "reports" / f"schedule_results{suffix}.json").read_text())
+        table = (root / "reports" / f"schedule_results{suffix}.md").read_text()
+        assert saved["age_priority"] is aging and "Backlog on the last day" in table
+        assert table.splitlines()[0].startswith("| Estimator | Tasks carried in")
+
+
+def test_carry_mode_of_the_command_line_runs_both_variants(trained, monkeypatch: pytest.MonkeyPatch, capsys):
+    root, _ = trained
+    monkeypatch.setattr(run_mod, "ARTIFACT", root / "artifacts" / "models.joblib")
+    monkeypatch.setattr(run_mod, "REPORT_DIR", root / "reports")
+    monkeypatch.setattr(run_mod, "DATA_DIR", root / "data")
+    monkeypatch.setattr("sys.argv", ["run", "--mode", "carry", "--workers", "1", "--max-users", "2"])
+    run_mod.main()
+    out = capsys.readouterr().out
+    assert "priority aging on" in out and "priority aging off" in out
+
+
 def test_markdown_table_and_summary_shape():
     rows = pd.DataFrame(
         [

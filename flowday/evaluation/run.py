@@ -30,6 +30,7 @@ from flowday.simulator import (
     generate_timeline,
     history_frame,
     simulate_day,
+    simulate_days,
 )
 
 ARTIFACT = Path("artifacts/models.joblib")
@@ -59,6 +60,22 @@ METRICS = {
 }
 
 
+# extra columns of the multi-day (carry-over) runs; every row has them (zero when nothing is carried)
+CARRY_METRICS = {
+    "carried_in": "Tasks carried in from yesterday / day",
+    "carry_days_completed": "Days of carry-over delay on tasks done / day",
+}
+CARRY_TABLE = [
+    "carried_in",
+    "tasks_completed",
+    "tasks_dropped",
+    "carry_days_completed",
+    "deadlines_missed",
+    "event_overlap_minutes",
+    "overtime_minutes",
+]
+
+
 class OracleEstimator:
     """Cheating upper bound: knows each task's true duration for the slot it is placed in."""
 
@@ -82,22 +99,45 @@ def evaluate_user(
     estimators: list[str] = ESTIMATORS,
     reclaim_early: bool = False,
     reclaim_min_gain: int = 0,
+    carry: bool = False,
+    age_priority: bool = True,
 ) -> list[dict[str, Any]]:
-    """Run every estimator over one user's evaluation-period days. Returns one row per (day, estimator)."""
+    """Run every estimator over one user's evaluation-period days. Returns one row per (day, estimator).
+    With `carry`, the days run in sequence and what a day cannot finish is carried into the next."""
     days = generate_timeline(user, cfg.n_days, cfg.seed)
     table = add_history_features(history_frame(days, cfg.seed))
     # estimator inputs only: the outcome column `actual` is deliberately not passed on
     features = table.set_index("task_id")[FEATURE_COLUMNS]
-    rows: list[dict[str, Any]] = []
-    for day in days[cfg.eval_start :]:
+
+    def planner_for(name: str, day: SyntheticDay) -> EstimatorPlanner:
         day_features = features.loc[[t.id for t in day.tasks]]
+        if name == "oracle":
+            return EstimatorPlanner(OracleEstimator(day), day_features, refine_iters=4)
+        return EstimatorPlanner(models[name], day_features)
+
+    rows: list[dict[str, Any]] = []
+    if carry:
+        eval_days = days[cfg.eval_start :]
         for name in estimators:
-            if name == "oracle":
-                planner = EstimatorPlanner(OracleEstimator(day), day_features, refine_iters=4)
-            else:
-                planner = EstimatorPlanner(models[name], day_features)
+            outcomes = simulate_days(
+                eval_days,
+                lambda day, name=name: planner_for(name, day),  # type: ignore[misc]
+                reclaim_early=reclaim_early,
+                reclaim_min_gain=reclaim_min_gain,
+                age_priority=age_priority,
+            )
+            rows += [
+                {"user_id": user.user_id, "day": d.index, "estimator": name, **o.as_row()}
+                for d, o in zip(eval_days, outcomes, strict=True)
+            ]
+        return rows
+    for day in days[cfg.eval_start :]:
+        for name in estimators:
             outcome = simulate_day(
-                day, planner, reclaim_early=reclaim_early, reclaim_min_gain=reclaim_min_gain
+                day,
+                planner_for(name, day),
+                reclaim_early=reclaim_early,
+                reclaim_min_gain=reclaim_min_gain,
             )
             rows.append({"user_id": user.user_id, "day": day.index, "estimator": name, **outcome.as_row()})
     return rows
@@ -113,6 +153,8 @@ def _init_worker(
     reclaim_early: bool,
     reclaim_min_gain: int,
     estimators: list[str],
+    carry: bool,
+    age_priority: bool,
 ) -> None:
     threadpool_limits(1)  # tiny predict() calls: OpenMP threading only adds overhead
     _STATE.update(
@@ -122,6 +164,8 @@ def _init_worker(
         reclaim_early=reclaim_early,
         reclaim_min_gain=reclaim_min_gain,
         estimators=estimators,
+        carry=carry,
+        age_priority=age_priority,
     )
 
 
@@ -133,6 +177,8 @@ def _job(user_id: int) -> list[dict[str, Any]]:
         _STATE["estimators"],
         reclaim_early=_STATE["reclaim_early"],
         reclaim_min_gain=_STATE["reclaim_min_gain"],
+        carry=_STATE["carry"],
+        age_priority=_STATE["age_priority"],
     )
 
 
@@ -144,23 +190,27 @@ def run_simulations(
     reclaim_early: bool = False,
     estimators: list[str] | None = None,
     reclaim_min_gain: int = 0,
+    carry: bool = False,
+    age_priority: bool = True,
 ) -> pd.DataFrame:
     names = list(estimators or ESTIMATORS)
     users = {u.user_id: u for u in make_users(cfg)}
     if workers <= 1:
-        _init_worker(models, cfg, users, reclaim_early, reclaim_min_gain, names)
+        _init_worker(models, cfg, users, reclaim_early, reclaim_min_gain, names, carry, age_priority)
         results = [_job(u) for u in user_ids]
     else:
         with ProcessPoolExecutor(
             workers,
             initializer=_init_worker,
-            initargs=(models, cfg, users, reclaim_early, reclaim_min_gain, names),
+            initargs=(models, cfg, users, reclaim_early, reclaim_min_gain, names, carry, age_priority),
         ) as pool:
             results = list(pool.map(_job, user_ids, chunksize=2))
     return pd.DataFrame([row for rows in results for row in rows])
 
 
-def summarize(rows: pd.DataFrame, baseline: str = "trust") -> dict[str, Any]:
+def summarize(
+    rows: pd.DataFrame, baseline: str = "trust", metrics: list[str] | None = None
+) -> dict[str, Any]:
     """Per-estimator mean per day with 95% CIs (resampling users), plus paired differences vs `baseline`."""
     out: dict[str, Any] = {
         "n_users": int(rows["user_id"].nunique()),
@@ -170,7 +220,7 @@ def summarize(rows: pd.DataFrame, baseline: str = "trust") -> dict[str, Any]:
     for name in dict.fromkeys(rows["estimator"]):  # in order of appearance
         sub = rows[rows["estimator"] == name].set_index(["user_id", "day"])
         entry: dict[str, Any] = {}
-        for metric in METRICS:
+        for metric in metrics or METRICS:
             mean, lo, hi = cluster_bootstrap_ci(
                 sub[metric].to_numpy(), sub.index.get_level_values(0).to_numpy()
             )
@@ -185,9 +235,10 @@ def summarize(rows: pd.DataFrame, baseline: str = "trust") -> dict[str, Any]:
 
 def markdown_table(summary: dict[str, Any], metrics: list[str] | None = None) -> str:
     metrics = metrics or list(METRICS)
-    head = "| Estimator | " + " | ".join(METRICS[m].replace(" / day", "") for m in metrics) + " |"
+    labels = {**METRICS, **CARRY_METRICS}
+    head = "| Estimator | " + " | ".join(labels[m].replace(" / day", "") for m in metrics) + " |"
     lines = [head, "|" + "---|" * (len(metrics) + 1)]
-    for name in [n for n in summary if isinstance(summary[n], dict) and n not in ("n_users", "n_days")]:
+    for name in [n for n in summary if isinstance(summary[n], dict) and metrics[0] in summary[n]]:
         cells = []
         for m in metrics:
             e = summary[name][m]
@@ -215,17 +266,64 @@ def run(workers: int, max_users: int | None = None, reclaim: bool = False) -> di
     return summary
 
 
+def run_carry(workers: int, max_users: int | None = None, age_priority: bool = True) -> dict[str, Any]:
+    """Multi-day evaluation: each test user's evaluation days run in sequence and whatever a day cannot
+    finish is carried into the next. With `age_priority` a task's priority rises one step per day carried."""
+    bundle = joblib.load(ARTIFACT)
+    cfg: DataConfig = bundle["config"]
+    test_users: list[int] = bundle["split"]["test"][:max_users]
+    rows = run_simulations(
+        bundle["estimators"], cfg, test_users, workers, carry=True, age_priority=age_priority
+    )
+    summary = summarize(rows, metrics=CARRY_TABLE)
+    last = rows[rows["day"] == rows["day"].max()]
+    backlog: dict[str, Any] = {}
+    delay: dict[str, float] = {}
+    for name in dict.fromkeys(rows["estimator"]):
+        final = last[last["estimator"] == name]
+        mean, lo, hi = cluster_bootstrap_ci(final["tasks_dropped"].to_numpy(), final["user_id"].to_numpy())
+        backlog[name] = {"mean": mean, "ci95": [lo, hi]}
+        mine = rows[rows["estimator"] == name]
+        delay[name] = float(mine["carry_days_completed"].sum() / mine["tasks_completed"].sum())
+    summary.update(
+        synthetic=True, age_priority=age_priority, backlog_end=backlog, delay_days_per_task_done=delay
+    )
+    suffix = "_carry" if age_priority else "_carry_noaging"
+    REPORT_DIR.mkdir(exist_ok=True)
+    DATA_DIR.mkdir(exist_ok=True)
+    rows.to_csv(DATA_DIR / f"schedule_eval_rows{suffix}.csv", index=False)
+    extra = [
+        "",
+        "| Estimator | Backlog on the last day (tasks waiting) | Carry-over delay per task done (days) |",
+        "|---|---|---|",
+    ]
+    for name in backlog:
+        b = backlog[name]
+        interval = f"{b['mean']:.2f} [{b['ci95'][0]:.2f}, {b['ci95'][1]:.2f}]"
+        extra.append(f"| {LABELS.get(name, name)} | {interval} | {delay[name]:.3f} |")
+    text = markdown_table(summary, CARRY_TABLE) + "\n" + "\n".join(extra) + "\n"
+    (REPORT_DIR / f"schedule_results{suffix}.json").write_text(json.dumps(summary, indent=2))
+    (REPORT_DIR / f"schedule_results{suffix}.md").write_text(text)
+    return summary
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1))
     ap.add_argument("--max-users", type=int, default=None, help="evaluate only the first K test users")
     ap.add_argument(
         "--mode",
-        choices=["both", "no-reclaim", "reclaim"],
+        choices=["both", "no-reclaim", "reclaim", "carry"],
         default="both",
-        help="no-reclaim: early finishes are not reclaimed (the headline setting); reclaim: they are",
+        help="no-reclaim: early finishes are not reclaimed (the headline setting); reclaim: they are; "
+        "carry: run the days in sequence with unfinished tasks carried over, with and without priority aging",
     )
     args = ap.parse_args()
+    if args.mode == "carry":
+        for aging in (True, False):
+            print(f"\n== unfinished tasks carried over, priority aging {'on' if aging else 'off'} ==")
+            print(markdown_table(run_carry(args.workers, args.max_users, aging), CARRY_TABLE))
+        return
     for reclaim in {"both": (False, True), "no-reclaim": (False,), "reclaim": (True,)}[args.mode]:
         print(f"\n== early finishes {'reclaimed' if reclaim else 'not reclaimed'} ==")
         print(markdown_table(run(args.workers, args.max_users, reclaim)))
