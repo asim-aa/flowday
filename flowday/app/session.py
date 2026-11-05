@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 
 import pandas as pd
@@ -20,6 +21,7 @@ from flowday.scheduler import (
     Placement,
     Schedule,
     Task,
+    carry_over,
     collisions,
     complete,
     fmt_time,
@@ -27,6 +29,7 @@ from flowday.scheduler import (
 from flowday.simulator import generate_timeline, history_frame
 
 APP_USER = "app-demo"
+CARRIED_ID = re.compile(r"d\d+-")  # a task that has already been carried keeps its id
 # An early finish pulls the rest of the day forward only if it frees at least this many minutes. Chosen at
 # the knee of the sweep in reports/sensitivity.md ("Reclaim threshold"): for the cautious planner it keeps
 # about 80% of the idle-time saving of reclaiming everything and halves the extra start-time churn.
@@ -179,6 +182,21 @@ class PlanningSession:
             if event.id == event_id
         ]
         return spills + [n for n in notes if not (spills and n.startswith("Nothing else"))]
+
+    @property
+    def unfinished(self) -> int:
+        """How many of the day's own tasks are not done yet (routine instances recur: they do not count)."""
+        done = self.schedule.completed_ids
+        return sum(1 for t in self.schedule.tasks if t.id not in done and "@" not in t.id)
+
+    def carry_over(self, day_no: int) -> list[Task]:
+        """The unfinished tasks, ready for tomorrow's plan: one day older, one priority step higher, no
+        deadline. Ids get a `d<day_no>-` prefix so they cannot collide with tomorrow's own ids."""
+        return [
+            t if CARRIED_ID.match(t.id) else replace(t, id=f"d{day_no}-{t.id}")
+            for t in carry_over(self.schedule)
+            if "@" not in t.id
+        ]
 
     def _require_next(self) -> Placement:
         p = self.next_task()

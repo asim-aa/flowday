@@ -33,7 +33,7 @@ from flowday.eventlog import EventLog
 from flowday.models import Estimator, TrustEstimate
 from flowday.models.retrain import MIN_ROWS, fit_from_log
 from flowday.models.train import quick_fit
-from flowday.scheduler import Schedule, expand_routines, fmt_time
+from flowday.scheduler import Schedule, Task, expand_routines, fmt_time
 from flowday.simulator import TASK_TYPES
 
 ARTIFACT = Path(os.environ.get("FLOWDAY_ARTIFACT", "artifacts/models.joblib"))
@@ -146,6 +146,7 @@ def gantt(schedule: Schedule, height: int = 280) -> alt.Chart:
 
 
 def schedule_table(schedule: Schedule) -> pd.DataFrame:
+    show_carried = any(schedule.task(p.task_id).carried for p in schedule.placements)
     rows = []
     for p in schedule.placements:
         t = schedule.task(p.task_id)
@@ -159,6 +160,7 @@ def schedule_table(schedule: Schedule) -> pd.DataFrame:
                 "End": fmt_time(p.end),
                 "Deadline": "" if t.deadline is None else fmt_time(t.deadline),
                 "Priority": t.priority,
+                **({"Carried (days)": t.carried} if show_carried else {}),
             }
         )
     return pd.DataFrame(rows)
@@ -349,7 +351,19 @@ def main() -> None:
         tasks, task_errors = parse_tasks(tasks_df)
         routines, routine_errors = parse_routines(routines_df)
         routine_events, routine_tasks = expand_routines(routines, 1, first_weekday=cfg.weekday)
-        events, tasks = events + routine_events, tasks + routine_tasks
+        carried: list[Task] = st.session_state.get("carried", [])
+        events, tasks = events + routine_events, tasks + routine_tasks + carried
+        if carried:
+            st.info(
+                f"{len(carried)} task(s) carried over from yesterday, one priority step higher and with no "
+                "deadline: " + ", ".join(f"**{c.title or c.id}** (carried {c.carried}d)" for c in carried)
+            )
+            st.button(
+                "Drop the carried-over tasks",
+                key="drop_carried",
+                on_click=st.session_state.pop,
+                args=("carried",),
+            )
         if routine_events or routine_tasks:
             st.caption(
                 f"{len(routine_events)} routine event(s) and {len(routine_tasks)} routine task(s) "
@@ -428,6 +442,16 @@ def main() -> None:
                 st.dataframe(log.history_frame().tail(20), hide_index=True, width="stretch")
 
 
+def _carry(session: PlanningSession) -> None:
+    """Callback: keep the day's unfinished tasks for tomorrow and close today's session."""
+    day_no = st.session_state.get("day_no", 0) + 1
+    st.session_state["day_no"] = day_no
+    # today's plan already contained yesterday's carried tasks, so what is unfinished replaces that list
+    st.session_state["carried"] = session.carry_over(day_no)
+    session.close()
+    del st.session_state["session"]
+
+
 def show_session(session: PlanningSession) -> None:
     s = session.schedule
     st.divider()
@@ -471,6 +495,14 @@ def show_session(session: PlanningSession) -> None:
     if session.changes:
         st.info(("Replanned. " if session.replanned else "") + "  \n".join(session.changes))
 
+    if session.unfinished:
+        st.button(
+            f"End the day: carry {session.unfinished} unfinished task(s) to tomorrow",
+            key="carry",
+            on_click=_carry,
+            args=(session,),
+            help="They come back tomorrow one priority step higher and without a deadline (that day has passed).",
+        )
     if s.placements:
         st.dataframe(schedule_table(s), hide_index=True, width="stretch")
     if s.dropped:

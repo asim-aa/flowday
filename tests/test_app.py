@@ -309,6 +309,58 @@ def test_hosted_mode_trains_its_own_model_and_keeps_nothing_on_the_server(
     assert any("keeps no event log" in i.value for i in at.info)
 
 
+def test_session_carry_over_returns_the_unfinished_tasks_ready_for_tomorrow(fitted):
+    s = start(fitted, "trust")
+    first = s.next_task()
+    assert first is not None
+    s.mark_done()
+    left = s.carry_over(1)
+    assert s.unfinished == len(left) == len(TASKS) - 1
+    assert first.task_id not in {t.id.removeprefix("d1-") for t in left}
+    assert all(t.id.startswith("d1-") and t.carried == 1 and t.deadline is None for t in left)
+
+
+def test_a_task_carried_a_second_time_keeps_its_id_and_counts_another_day(fitted):
+    first = start(fitted, "trust").carry_over(1)
+    tomorrow = PlanningSession.start("trust", fitted["trust"], EVENTS, first, WINDOW)
+    again = tomorrow.carry_over(2)
+    assert {t.id for t in again} == {t.id for t in first} and all(t.carried == 2 for t in again)
+
+
+def test_carried_tasks_join_tomorrows_plan_and_carry_again_with_unique_ids(app: AppTest):
+    at = app.run()
+    at.sidebar.selectbox(key="weekday").set_value(1)  # Tuesday: only the daily routine applies
+    at.button(key="plan").click().run()
+    at.button(key="done").click().run()
+    unfinished = at.session_state["session"].unfinished
+    at.button(key="carry").click().run()
+    assert not at.exception
+    carried = at.session_state["carried"]
+    assert len(carried) == unfinished and all(c.carried == 1 and c.id.startswith("d1-") for c in carried)
+    assert "session" not in at.session_state and any(
+        "carried over from yesterday" in i.value for i in at.info
+    )
+
+    at.button(key="plan").click().run()  # tomorrow: its own tasks plus the carried ones
+    assert not at.exception
+    tomorrow = at.session_state["session"].schedule
+    assert {c.id for c in carried} <= {t.id for t in tomorrow.tasks} and validate_schedule(tomorrow) == []
+    at.button(key="carry").click().run()  # carry everything again, untouched
+    again = at.session_state["carried"]
+    assert len({t.id for t in again}) == len(again)  # old ones keep d1-, tomorrow's own get d2-
+    assert {t.carried for t in again if t.id.startswith("d1-")} == {2}
+    assert {t.carried for t in again if t.id.startswith("d2-")} == {1}
+
+
+def test_carried_tasks_can_be_dropped(app: AppTest):
+    at = app.run()
+    at.button(key="plan").click().run()
+    at.button(key="carry").click().run()
+    assert at.session_state["carried"]
+    at.button(key="drop_carried").click().run()
+    assert not at.exception and "carried" not in at.session_state
+
+
 def test_app_compare_tab_shows_every_estimator(app: AppTest):
     at = app.run()
     assert not at.exception
